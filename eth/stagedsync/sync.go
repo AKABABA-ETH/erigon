@@ -1,21 +1,37 @@
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
+//
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
+
 package stagedsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/ledgerwatch/erigon-lib/log/v3"
-	"github.com/ledgerwatch/erigon-lib/state"
+	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon-lib/state"
 
-	libcommon "github.com/ledgerwatch/erigon-lib/common"
-	"github.com/ledgerwatch/erigon-lib/common/dbg"
-	"github.com/ledgerwatch/erigon-lib/diagnostics"
-	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon-lib/wrap"
+	libcommon "github.com/erigontech/erigon-lib/common"
+	"github.com/erigontech/erigon-lib/common/dbg"
+	"github.com/erigontech/erigon-lib/kv"
+	"github.com/erigontech/erigon-lib/wrap"
 
-	"github.com/ledgerwatch/erigon/eth/ethconfig"
-	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
+	"github.com/erigontech/erigon/eth/ethconfig"
+	"github.com/erigontech/erigon/eth/stagedsync/stages"
 )
 
 type Sync struct {
@@ -33,6 +49,7 @@ type Sync struct {
 	logPrefixes   []string
 	logger        log.Logger
 	stagesIdsList []string
+	mode          stages.Mode
 }
 
 type Timing struct {
@@ -61,7 +78,7 @@ func (s *Sync) PrevUnwindPoint() *uint64 {
 }
 
 func (s *Sync) NewUnwindState(id stages.SyncStage, unwindPoint, currentProgress uint64, initialCycle, firstCycle bool) *UnwindState {
-	return &UnwindState{id, unwindPoint, currentProgress, UnwindReason{nil, nil}, s, CurrentSyncCycleInfo{initialCycle, firstCycle}}
+	return &UnwindState{id, unwindPoint, currentProgress, UnwindReason{nil, nil}, s, CurrentSyncCycleInfo{initialCycle, firstCycle, s.mode}}
 }
 
 // Get the current prune status from the DB
@@ -86,7 +103,7 @@ func (s *Sync) PruneStageState(id stages.SyncStage, forwardProgress uint64, tx k
 		}
 	}
 
-	return &PruneState{id, forwardProgress, pruneProgress, s, CurrentSyncCycleInfo{initialCycle, false}}, nil
+	return &PruneState{id, forwardProgress, pruneProgress, s, CurrentSyncCycleInfo{initialCycle, false, s.mode}}, nil
 }
 
 func (s *Sync) NextStage() {
@@ -94,10 +111,6 @@ func (s *Sync) NextStage() {
 		return
 	}
 	s.currentStage++
-
-	if s.currentStage < uint(len(s.stages)) {
-		diagnostics.Send(diagnostics.CurrentSyncStage{Stage: string(s.stages[s.currentStage].ID)})
-	}
 }
 
 // IsBefore returns true if stage1 goes before stage2 in staged sync
@@ -137,14 +150,24 @@ func (s *Sync) IsAfter(stage1, stage2 stages.SyncStage) bool {
 func (s *Sync) HasUnwindPoint() bool { return s.unwindPoint != nil }
 func (s *Sync) UnwindTo(unwindPoint uint64, reason UnwindReason, tx kv.Tx) error {
 	if tx != nil {
-		lowestUnwindableBlock, err := state.ReadLowestUnwindableBlock(tx)
-		if err != nil {
-			return err
-		}
-		if lowestUnwindableBlock > unwindPoint {
-			return fmt.Errorf("cannot unwind to block %d, lowest unwindable block is %d", unwindPoint, lowestUnwindableBlock)
+		if casted, ok := tx.(state.HasAggTx); ok {
+			// protect from too far unwind
+			unwindPointWithCommitment, ok, err := casted.AggTx().(*state.AggregatorRoTx).CanUnwindBeforeBlockNum(unwindPoint, tx)
+			// Ignore in the case that snapshots are ahead of commitment, it will be resolved later.
+			// This can be a problem if snapshots include a wrong chain so it is ok to ignore it.
+			if errors.Is(err, state.ErrBehindCommitment) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("too far unwind. requested=%d, minAllowed=%d", unwindPoint, unwindPointWithCommitment)
+			}
+			unwindPoint = unwindPointWithCommitment
 		}
 	}
+
 	if reason.Block != nil {
 		s.logger.Debug("UnwindTo", "block", unwindPoint, "block_hash", reason.Block.String(), "err", reason.Err, "stack", dbg.Stack())
 	} else {
@@ -179,15 +202,13 @@ func (s *Sync) SetCurrentStage(id stages.SyncStage) error {
 		if stage.ID == id {
 			s.currentStage = uint(i)
 
-			diagnostics.Send(diagnostics.CurrentSyncStage{Stage: string(id)})
-
 			return nil
 		}
 	}
 	return fmt.Errorf("stage not found with id: %v", id)
 }
 
-func New(cfg ethconfig.Sync, stagesList []*Stage, unwindOrder UnwindOrder, pruneOrder PruneOrder, logger log.Logger) *Sync {
+func New(cfg ethconfig.Sync, stagesList []*Stage, unwindOrder UnwindOrder, pruneOrder PruneOrder, logger log.Logger, mode stages.Mode) *Sync {
 	unwindStages := make([]*Stage, len(stagesList))
 	for i, stageIndex := range unwindOrder {
 		for _, s := range stagesList {
@@ -223,6 +244,7 @@ func New(cfg ethconfig.Sync, stagesList []*Stage, unwindOrder UnwindOrder, prune
 		logPrefixes:   logPrefixes,
 		logger:        logger,
 		stagesIdsList: stagesIdsList,
+		mode:          mode,
 	}
 }
 
@@ -247,7 +269,7 @@ func (s *Sync) StageState(stage stages.SyncStage, tx kv.Tx, db kv.RoDB, initialC
 		}
 	}
 
-	return &StageState{s, stage, blockNum, CurrentSyncCycleInfo{initialCycle, firstCycle}}, nil
+	return &StageState{s, stage, blockNum, CurrentSyncCycleInfo{initialCycle, firstCycle, s.mode}}, nil
 }
 
 func (s *Sync) RunUnwind(db kv.RwDB, txc wrap.TxContainer) error {
@@ -345,9 +367,8 @@ func (s *Sync) Run(db kv.RwDB, txc wrap.TxContainer, initialCycle, firstCycle bo
 	s.timings = s.timings[:0]
 
 	hasMore := false
-
+	var badBlockUnwind bool
 	for !s.IsDone() {
-		var badBlockUnwind bool
 		if s.unwindPoint != nil {
 			for j := 0; j < len(s.unwindOrder); j++ {
 				if s.unwindOrder[j] == nil || s.unwindOrder[j].Disabled || s.unwindOrder[j].Unwind == nil {
@@ -385,11 +406,9 @@ func (s *Sync) Run(db kv.RwDB, txc wrap.TxContainer, initialCycle, firstCycle bo
 
 		if stage.Disabled || stage.Forward == nil {
 			s.logger.Trace(fmt.Sprintf("%s disabled. %s", stage.ID, stage.DisabledDescription))
-
 			s.NextStage()
 			continue
 		}
-
 		if err := s.runStage(stage, db, txc, initialCycle, firstCycle, badBlockUnwind); err != nil {
 			return false, err
 		}
@@ -430,6 +449,11 @@ func (s *Sync) Run(db kv.RwDB, txc wrap.TxContainer, initialCycle, firstCycle bo
 	}
 
 	s.currentStage = 0
+
+	if badBlockUnwind {
+		return false, errors.New("bad block unwinding")
+	}
+
 	return hasMore, nil
 }
 
@@ -471,20 +495,6 @@ func (s *Sync) PrintTimings() []interface{} {
 		}
 	}
 	return logCtx
-}
-
-func CollectDBMetrics(db kv.RoDB, tx kv.RwTx) []interface{} {
-	res := CollectTableSizes(db, tx, []string{
-		kv.PlainState,
-		kv.AccountChangeSet,
-		kv.StorageChangeSet,
-		kv.EthTx,
-		kv.Log,
-	})
-
-	tx.CollectMetrics()
-
-	return res
 }
 
 func CollectTableSizes(db kv.RoDB, tx kv.Tx, buckets []string) []interface{} {
