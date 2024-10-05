@@ -276,10 +276,12 @@ func (s *DirtySegment) isSubSetOf(j *DirtySegment) bool {
 }
 
 func (s *DirtySegment) reopenSeg(dir string) (err error) {
-	s.closeSeg()
-	s.Decompressor, err = seg.NewDecompressor(filepath.Join(dir, s.FileName()))
-	if err != nil {
-		return fmt.Errorf("%w, fileName: %s", err, s.FileName())
+	if s.refcount.Load() == 0 {
+		s.closeSeg()
+		s.Decompressor, err = seg.NewDecompressor(filepath.Join(dir, s.FileName()))
+		if err != nil {
+			return fmt.Errorf("%w, fileName: %s", err, s.FileName())
+		}
 	}
 	return nil
 }
@@ -663,8 +665,10 @@ func (s *RoSnapshots) idxAvailability() uint64 {
 		if !s.HasType(segtype.Type()) {
 			return true
 		}
-		maxIdx = value.maxVisibleBlock.Load()
-		return false // all types of segments have the same height. stop here
+		if len(value.VisibleSegments) > 0 {
+			maxIdx = value.VisibleSegments[len(value.VisibleSegments)-1].to - 1
+		}
+		return false // all types of visible-segments have the same height. stop here
 	})
 
 	return maxIdx
@@ -1323,10 +1327,6 @@ func typedSegments(dir string, minBlock uint64, types []snaptype.Type, allowGaps
 				log.Debug("[snapshots] see gap", "type", segType, "from", lst.from)
 			}
 			res = append(res, l...)
-			if len(m) > 0 {
-				lst := m[len(m)-1]
-				log.Debug("[snapshots] see gap", "type", segType, "from", lst.from)
-			}
 
 			missingSnapshots = append(missingSnapshots, m...)
 		}
