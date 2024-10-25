@@ -19,11 +19,15 @@ var (
 	metricProposerHit = metrics.GetOrCreateCounter("validator_proposal_hit")
 	// metricProposerMiss is the number of proposals that miss for those validators we observe in previous slot
 	metricProposerMiss = metrics.GetOrCreateCounter("validator_proposal_miss")
+	// aggregateAndProofSignatures is the sum of signatures in all the aggregates in the recent slot
+	aggregateAndProofSignatures = metrics.GetOrCreateGauge("aggregate_and_proof_signatures")
 
 	// Block processing metrics
 	fullBlockProcessingTime        = metrics.GetOrCreateGauge("full_block_processing_time")
 	attestationBlockProcessingTime = metrics.GetOrCreateGauge("attestation_block_processing_time")
 	batchVerificationThroughput    = metrics.GetOrCreateGauge("aggregation_per_signature")
+	blobVerificationTime           = metrics.GetOrCreateGauge("blob_verification_time")
+	executionTime                  = metrics.GetOrCreateGauge("execution_time")
 
 	// Epoch processing metrics
 	epochProcessingTime                     = metrics.GetOrCreateGauge("epoch_processing_time")
@@ -45,12 +49,18 @@ var (
 	aggregateQuality75Per           = metrics.GetOrCreateGauge("aggregate_quality_75")
 	aggregateQualityMin             = metrics.GetOrCreateGauge("aggregate_quality_min")
 	aggregateQualityMax             = metrics.GetOrCreateGauge("aggregate_quality_max")
+	blockImportingLatency           = metrics.GetOrCreateGauge("block_importing_latency")
 
 	// Beacon chain metrics
 	committeeSize         = metrics.GetOrCreateGauge("committee_size")
 	activeValidatorsCount = metrics.GetOrCreateGauge("active_validators_count")
 	currentSlot           = metrics.GetOrCreateGauge("current_slot")
 	currentEpoch          = metrics.GetOrCreateGauge("current_epoch")
+	aggregateAttestation  = metrics.GetOrCreateGauge("aggregate_attestation")
+
+	// Libp2p metrics
+	totalInBytes  = metrics.GetOrCreateGauge("total_in_bytes")
+	totalOutBytes = metrics.GetOrCreateGauge("total_out_bytes")
 
 	// Snapshot metrics
 	frozenBlocks = metrics.GetOrCreateGauge("frozen_blocks")
@@ -114,6 +124,11 @@ func microToMilli(micros int64) float64 {
 	return float64(micros) / 1000
 }
 
+// ObserveNumberOfAggregateSignatures sets the average processing time for each attestation in aggregate
+func ObserveNumberOfAggregateSignatures(signatures int) {
+	aggregateAndProofSignatures.Add(float64(signatures))
+}
+
 // ObserveEpochProcessingTime sets last epoch processing time
 func ObserveEpochProcessingTime(startTime time.Time) {
 	epochProcessingTime.Set(float64(time.Since(startTime).Microseconds()))
@@ -122,6 +137,11 @@ func ObserveEpochProcessingTime(startTime time.Time) {
 // ObserveProcessJustificationBitsAndFinalityTime sets ProcessJustificationBitsAndFinality time
 func ObserveProcessJustificationBitsAndFinalityTime(startTime time.Time) {
 	processJustificationBitsAndFinalityTime.Set(float64(time.Since(startTime).Microseconds()))
+}
+
+// ObserveAggregateAttestation sets the time it took add new attestation to aggregateAndProof
+func ObserveAggregateAttestation(startTime time.Time) {
+	aggregateAttestation.Set(float64(time.Since(startTime).Microseconds()))
 }
 
 // ObserveProcessRewardsAndPenaltiesTime sets ProcessRewardsAndPenalties time
@@ -205,6 +225,9 @@ func ObserveActiveValidatorsCount(count int) {
 }
 
 func ObserveCurrentSlot(slot uint64) {
+	if currentSlot.GetValueUint64() != slot {
+		aggregateAndProofSignatures.Set(0)
+	}
 	currentSlot.Set(float64(slot))
 }
 
@@ -218,4 +241,24 @@ func ObserveFrozenBlocks(count int) {
 
 func ObserveFrozenBlobs(count int) {
 	frozenBlobs.Set(float64(count))
+}
+
+func ObserveTotalInBytes(count int64) {
+	totalInBytes.Set(float64(count))
+}
+
+func ObserveTotalOutBytes(count int64) {
+	totalOutBytes.Set(float64(count))
+}
+
+func ObserveBlockImportingLatency(latency time.Time) {
+	blockImportingLatency.Set(microToMilli(time.Since(latency).Microseconds()))
+}
+
+func ObserveBlobVerificationTime(startTime time.Time) {
+	blobVerificationTime.Set(microToMilli(time.Since(startTime).Microseconds()))
+}
+
+func ObserveExecutionTime(startTime time.Time) {
+	executionTime.Set(microToMilli(time.Since(startTime).Microseconds()))
 }

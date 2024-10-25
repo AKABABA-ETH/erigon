@@ -31,6 +31,7 @@ import (
 	"github.com/erigontech/erigon/cl/clparams"
 	"github.com/erigontech/erigon/cl/cltypes/solid"
 	"github.com/erigontech/erigon/cl/fork"
+	"github.com/erigontech/erigon/cl/monitor"
 	"github.com/erigontech/erigon/cl/phase1/core/state/lru"
 	"github.com/erigontech/erigon/cl/phase1/forkchoice"
 	"github.com/erigontech/erigon/cl/phase1/network/subnets"
@@ -101,11 +102,22 @@ func NewAttestationService(
 
 func (s *attestationService) ProcessMessage(ctx context.Context, subnet *uint64, att *AttestationWithGossipData) error {
 	var (
-		root           = att.Attestation.AttestantionData().BeaconBlockRoot()
-		slot           = att.Attestation.AttestantionData().Slot()
-		committeeIndex = att.Attestation.AttestantionData().CommitteeIndex()
-		targetEpoch    = att.Attestation.AttestantionData().Target().Epoch()
+		root           = att.Attestation.Data.BeaconBlockRoot
+		slot           = att.Attestation.Data.Slot
+		committeeIndex = att.Attestation.Data.CommitteeIndex
+		targetEpoch    = att.Attestation.Data.Target.Epoch
+		attEpoch       = s.ethClock.GetEpochAtSlot(slot)
+		clVersion      = s.beaconCfg.GetCurrentStateVersion(attEpoch)
 	)
+
+	if clVersion.AfterOrEqual(clparams.ElectraVersion) {
+		index, err := att.Attestation.ElectraSingleCommitteeIndex()
+		if err != nil {
+			return err
+		}
+		committeeIndex = index
+	}
+
 	headState := s.syncedDataManager.HeadStateReader()
 	if headState == nil {
 		return ErrIgnore
@@ -145,7 +157,7 @@ func (s *attestationService) ProcessMessage(ctx context.Context, subnet *uint64,
 	if err != nil {
 		return err
 	}
-	bits := att.Attestation.AggregationBits()
+	bits := att.Attestation.AggregationBits.Bytes()
 	expectedAggregationBitsLength := len(beaconCommittee)
 	actualAggregationBitsLength := utils.GetBitlistLength(bits)
 	if actualAggregationBitsLength != expectedAggregationBitsLength {
@@ -189,7 +201,7 @@ func (s *attestationService) ProcessMessage(ctx context.Context, subnet *uint64,
 	s.validatorAttestationSeen.Add(vIndex, targetEpoch)
 
 	// [REJECT] The signature of attestation is valid.
-	signature := att.Attestation.Signature()
+	signature := att.Attestation.Signature
 	pubKey, err := headState.ValidatorPublicKey(int(beaconCommittee[onBitIndex]))
 	if err != nil {
 		return fmt.Errorf("unable to get public key: %v", err)
@@ -198,7 +210,7 @@ func (s *attestationService) ProcessMessage(ctx context.Context, subnet *uint64,
 	if err != nil {
 		return fmt.Errorf("unable to get the domain: %v", err)
 	}
-	signingRoot, err := computeSigningRoot(att.Attestation.AttestantionData(), domain)
+	signingRoot, err := computeSigningRoot(att.Attestation.Data, domain)
 	if err != nil {
 		return fmt.Errorf("unable to get signing root: %v", err)
 	}
@@ -213,13 +225,13 @@ func (s *attestationService) ProcessMessage(ctx context.Context, subnet *uint64,
 	// [REJECT] The attestation's target block is an ancestor of the block named in the LMD vote -- i.e.
 	// get_checkpoint_block(store, attestation.data.beacon_block_root, attestation.data.target.epoch) == attestation.data.target.root
 	startSlotAtEpoch := targetEpoch * s.beaconCfg.SlotsPerEpoch
-	if targetBlock := s.forkchoiceStore.Ancestor(root, startSlotAtEpoch); targetBlock != att.Attestation.AttestantionData().Target().BlockRoot() {
-		return fmt.Errorf("invalid target block. root %v targetEpoch %v attTargetBlockRoot %v targetBlock %v", root.Hex(), targetEpoch, att.Attestation.AttestantionData().Target().BlockRoot().Hex(), targetBlock.Hex())
+	if targetBlock := s.forkchoiceStore.Ancestor(root, startSlotAtEpoch); targetBlock != att.Attestation.Data.Target.Root {
+		return fmt.Errorf("invalid target block. root %v targetEpoch %v attTargetBlockRoot %v targetBlock %v", root.Hex(), targetEpoch, att.Attestation.Data.Target.Root.Hex(), targetBlock.Hex())
 	}
 	// [IGNORE] The current finalized_checkpoint is an ancestor of the block defined by attestation.data.beacon_block_root --
 	// i.e. get_checkpoint_block(store, attestation.data.beacon_block_root, store.finalized_checkpoint.epoch) == store.finalized_checkpoint.root
-	startSlotAtEpoch = s.forkchoiceStore.FinalizedCheckpoint().Epoch() * s.beaconCfg.SlotsPerEpoch
-	if s.forkchoiceStore.Ancestor(root, startSlotAtEpoch) != s.forkchoiceStore.FinalizedCheckpoint().BlockRoot() {
+	startSlotAtEpoch = s.forkchoiceStore.FinalizedCheckpoint().Epoch * s.beaconCfg.SlotsPerEpoch
+	if s.forkchoiceStore.Ancestor(root, startSlotAtEpoch) != s.forkchoiceStore.FinalizedCheckpoint().Root {
 		return fmt.Errorf("invalid finalized checkpoint %w", ErrIgnore)
 	}
 
@@ -233,6 +245,8 @@ func (s *attestationService) ProcessMessage(ctx context.Context, subnet *uint64,
 		Pks:        [][]byte{pubKey[:]},
 		GossipData: att.GossipData,
 		F: func() {
+			start := time.Now()
+			defer monitor.ObserveAggregateAttestation(start)
 			err = s.committeeSubscribe.AggregateAttestation(att.Attestation)
 			if errors.Is(err, aggregation.ErrIsSuperset) {
 				return
@@ -294,7 +308,7 @@ func (a *attestationService) loop(ctx context.Context) {
 				return true
 			}
 
-			root := v.att.Attestation.AttestantionData().BeaconBlockRoot()
+			root := v.att.Attestation.Data.BeaconBlockRoot
 			if _, ok := a.forkchoiceStore.GetHeader(root); !ok {
 				return true
 			}
