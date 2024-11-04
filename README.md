@@ -1,6 +1,8 @@
 # Erigon
 
 Documentation: **[erigon.gitbook.io](https://erigon.gitbook.io)**
+Blog: **[erigon.substack.com](https://erigon.substack.com/)**
+Twitter: [x.com/ErigonEth](https://x.com/ErigonEth)
 
 Erigon is an implementation of Ethereum (execution layer with embeddable consensus layer), on the efficiency
 frontier. [Archive Node](https://ethereum.org/en/developers/docs/nodes-and-clients/archive-nodes/#what-is-an-archive-node)
@@ -25,32 +27,19 @@ by default.
     - [Embedded Consensus Layer](#embedded-consensus-layer)
     - [Testnets](#testnets)
     - [Block Production (PoS Validator)](#block-production-pos-validator)
-    - [Windows](#windows)
-    - [Using TOML or YAML Config Files](#using-toml-or-yaml-config-files)
-    - [Example](#example)
-    - [TOML](#toml)
-    - [YAML](#yaml)
+    - [Config Files TOML](#config-files-toml)
     - [Beacon Chain (Consensus Layer)](#beacon-chain-consensus-layer)
     - [Caplin](#caplin)
-        - [Caplin's Usage.](#caplins-usage)
+        - [Caplin's Usage](#caplins-usage)
     - [Multiple Instances / One Machine](#multiple-instances--one-machine)
     - [Dev Chain](#dev-chain)
 - [Key features](#key-features)
-    - [More Efficient State Storage](#more-efficient-state-storage)
     - [Faster Initial Sync](#faster-initial-sync)
+    - [More Efficient State Storage](#more-efficient-state-storage)
     - [JSON-RPC daemon](#json-rpc-daemon)
-        - [**For remote DB**](#for-remote-db)
-        - [**gRPC ports**](#grpc-ports)
-    - [Run all components by docker-compose](#run-all-components-by-docker-compose)
-        - [Optional: Setup dedicated user](#optional-setup-dedicated-user)
-        - [Environment Variables](#environment-variables)
-        - [Check: Permissions](#check-permissions)
-        - [Run](#run)
     - [Grafana dashboard](#grafana-dashboard)
-    - [](#)
-- [Documentation](#documentation)
 - [FAQ](#faq)
-    - [How much RAM do I need](#how-much-ram-do-i-need)
+    - [Use as library](#use-as-library)
     - [Default Ports and Firewalls](#default-ports-and-firewalls)
         - [`erigon` ports](#erigon-ports)
         - [`caplin` ports](#caplin-ports)
@@ -58,24 +47,30 @@ by default.
         - [`shared` ports](#shared-ports)
         - [`other` ports](#other-ports)
         - [Hetzner expecting strict firewall rules](#hetzner-expecting-strict-firewall-rules)
-    - [How to run erigon as a separate user? (e.g. as a
-      `systemd` daemon)](#how-to-run-erigon-as-a-separate-user-eg-as-a-systemd-daemon)
-    - [How to get diagnostic for bug report?](#how-to-get-diagnostic-for-bug-report)
-    - [How to run local devnet?](#how-to-run-local-devnet)
+    - [Run as a separate user - `systemd` example](#run-as-a-separate-user---systemd-example)
+    - [Grab diagnostic for bug report](#grab-diagnostic-for-bug-report)
+    - [Run local devnet](#run-local-devnet)
     - [Docker permissions error](#docker-permissions-error)
-    - [How to run public RPC api](#how-to-run-public-rpc-api)
-    - [Run RaspberyPI](#run-raspberypi)
+    - [Public RPC](#public-rpc)
+    - [RaspberyPI](#raspberypi)
+    - [Run all components by docker-compose](#run-all-components-by-docker-compose)
+        - [Optional: Setup dedicated user](#optional-setup-dedicated-user)
+        - [Environment Variables](#environment-variables)
+        - [Run](#run)
     - [How to change db pagesize](#how-to-change-db-pagesize)
+    - [Erigon3 perf tricks](#erigon3-perf-tricks)
+    - [Windows](#windows)
 - [Getting in touch](#getting-in-touch)
     - [Erigon Discord Server](#erigon-discord-server)
+    - [Blog](#blog)
+    - [Twitter](#twitter)
     - [Reporting security issues/concerns](#reporting-security-issuesconcerns)
 - [Known issues](#known-issues)
     - [`htop` shows incorrect memory usage](#htop-shows-incorrect-memory-usage)
-    - [Blocks Execution is slow on cloud-network-drives](#blocks-execution-is-slow-on-cloud-network-drives)
+    - [Cloud network drives](#cloud-network-drives)
     - [Filesystem's background features are expensive](#filesystems-background-features-are-expensive)
     - [Gnome Tracker can kill Erigon](#gnome-tracker-can-kill-erigon)
     - [the --mount option requires BuildKit error](#the---mount-option-requires-buildkit-error)
-    - [Erigon3 perf tricks](#erigon3-perf-tricks)
 
 <!--te-->
 
@@ -95,8 +90,8 @@ architecture.
 - ArchiveNode Polygon Mainnet: 4.1TB (April 2024). FullNode: 2Tb (April 2024)
 
 SSD or NVMe. Do not recommend HDD - on HDD Erigon will always stay N blocks behind chain tip, but not fall behind.
-Bear in mind that SSD performance deteriorates when close to capacity. CloudDrives (like gp3) - are high-latency not
-very good for Erigon.
+Bear in mind that SSD performance deteriorates when close to capacity. CloudDrives (like
+gp3): [Blocks Execution is slow on cloud-network-drives](#blocks-execution-is-slow-on-cloud-network-drives)
 
 🔬 More details on [Erigon3 datadir size](#erigon3-datadir-size)
 
@@ -208,19 +203,18 @@ du -hsc /erigon/snapshots/*
 
 ### Erigon3 changes from Erigon2
 
-- Sync from scratch doesn't require re-exec all history. Latest state and it's history are in snapshots - can download.
-- ExecutionStage - now including many E2 stages: stage_hash_state, stage_trie, stage_log_index, stage_history_index,
-  stage_trace_index
+- Initial sync does download LatestState and it's history - no re-exec from 0 anymore.
+- ExecutionStage included many E2 stages: stage_hash_state, stage_trie, log_index, history_index, trace_index
 - E3 can execute 1 historical transaction - without executing it's block - because history/indices have
   transaction-granularity, instead of block-granularity.
 - E3 doesn't store Logs (aka Receipts) - it always re-executing historical txn (but it's cheaper then in E2 - see point
   above).
-- `--sync.loop.block.limit` is enabled by default. (Default: `5_000`.
-  Set `--sync.loop.block.limit=10_000 --batchSize=2g` to increase sync speed on good hardware).
-- datadir/chaindata is small now - to prevent it's grow: we recommend set `--batchSize <= 2G`. And it's fine to
-  `rm -rf chaindata`
+- Restart doesn't loose much partial progress: `--sync.loop.block.limit=5_000` enabled by default
+- `chaindata` is less than `15gb`. It's ok to `rm -rf chaindata`. To prevent it's grow: recommend `--batchSize <= 1G`
 - can symlink/mount latest state to fast drive and history to cheap drive
-- Archive Node is default. Full Node: `--prune.mode=full`, Minimal Node (EIP-4444): `--prune.mode=minimal`
+- `--internalcl` is enabled by default. to disable use `--externalcl`
+- `--prune` flags changed: default `--prune.mode=archive`, FullNode: `--prune.mode=full`, MinimalNode (EIP-4444):
+  `--prune.mode=minimal`.
 
 ### Logging
 
@@ -263,6 +257,8 @@ Same true about: JSON RPC layer (RPCDaemon), p2p layer (Sentry), history downloa
 Don't start services as separated processes unless you have clear reason for it: resource limiting, scale, replace by
 your own implementation, security.
 How to start Erigon's services as separated processes, see in [docker-compose.yml](./docker-compose.yml).
+Each service has own `./cmd/*/README.md` file.
+[Erigon Blog](https://erigon.substack.com/).
 
 ### Embedded Consensus Layer
 
@@ -288,66 +284,17 @@ directory `--datadir` does not have to match the name of the chain in `--chain`.
 
 Block production is fully supported for Ethereum & Gnosis Chain. It is still experimental for Polygon.
 
-### Windows
+### Config Files TOML
 
-Windows users may run erigon in 3 possible ways:
+You can set Erigon flags through a TOML configuration file with the flag `--config`. The flags set in the
+configuration file can be overwritten by writing the flags directly on Erigon command line
 
-* Build executable binaries natively for Windows using provided `wmake.ps1` PowerShell script. Usage syntax is the same
-  as `make` command so you have to run `.\wmake.ps1 [-target] <targetname>`. Example: `.\wmake.ps1 erigon` builds erigon
-  executable. All binaries are placed in `.\build\bin\` subfolder. There are some requirements for a successful native
-  build on windows :
-    * [Git](https://git-scm.com/downloads) for Windows must be installed. If you're cloning this repository is very
-      likely you already have it
-    * [GO Programming Language](https://golang.org/dl/) must be installed. Minimum required version is 1.22
-    * GNU CC Compiler at least version 13 (is highly suggested that you install `chocolatey` package manager - see
-      following point)
-    * If you need to build MDBX tools (i.e. `.\wmake.ps1 db-tools`)
-      then [Chocolatey package manager](https://chocolatey.org/) for Windows must be installed. By Chocolatey you need
-      to install the following components : `cmake`, `make`, `mingw` by `choco install cmake make mingw`. Make sure
-      Windows System "Path" variable has:
-      C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin
-
-  **Important note about Anti-Viruses**
-  During MinGW's compiler detection phase some temporary executables are generated to test compiler capabilities. It's
-  been reported some anti-virus programs detect those files as possibly infected by `Win64/Kryptic.CIS` trojan horse (or
-  a variant of it). Although those are false positives we have no control over 100+ vendors of security products for
-  Windows and their respective detection algorithms and we understand this might make your experience with Windows
-  builds uncomfortable. To workaround the issue you might either set exclusions for your antivirus specifically
-  for `build\bin\mdbx\CMakeFiles` sub-folder of the cloned repo or you can run erigon using the following other two
-  options
-
-* Use Docker :  see [docker-compose.yml](./docker-compose.yml)
-
-* Use WSL (Windows Subsystem for Linux) **strictly on version 2**. Under this option you can build Erigon just as you
-  would on a regular Linux distribution. You can point your data also to any of the mounted Windows partitions (
-  eg. `/mnt/c/[...]`, `/mnt/d/[...]` etc) but in such case be advised performance is impacted: this is due to the fact
-  those mount points use `DrvFS` which is a [network file system](#blocks-execution-is-slow-on-cloud-network-drives)
-  and, additionally, MDBX locks the db for exclusive access which implies only one process at a time can access data.
-  This has consequences on the running of `rpcdaemon` which has to be configured as [Remote DB](#for-remote-db) even if
-  it is executed on the very same computer. If instead your data is hosted on the native Linux filesystem non
-  limitations apply.
-  **Please also note the default WSL2 environment has its own IP address which does not match the one of the network
-  interface of Windows host: take this into account when configuring NAT for port 30303 on your router.**
-
-### Using TOML or YAML Config Files
-
-You can set Erigon flags through a YAML or TOML configuration file with the flag `--config`. The flags set in the
-configuration
-file can be overwritten by writing the flags directly on Erigon command line
-
-### Example
-
-`./build/bin/erigon --config ./config.yaml --chain=sepolia`
+`./build/bin/erigon --config ./config.toml --chain=sepolia`
 
 Assuming we have `chain : "mainnet"` in our configuration file, by adding `--chain=sepolia` allows the overwrite of the
-flag inside
-of the yaml configuration file and sets the chain to sepolia
+flag inside of the toml configuration file and sets the chain to sepolia
 
-### TOML
-
-Example of setting up TOML config file
-
-```
+```toml
 datadir = 'your datadir'
 port = 1111
 chain = "mainnet"
@@ -355,20 +302,6 @@ http = true
 "private.api.addr"="localhost:9090"
 
 "http.api" = ["eth","debug","net"]
-```
-
-### YAML
-
-Example of setting up a YAML config file
-
-```
-datadir : 'your datadir'
-port : 1111
-chain : "mainnet"
-http : true
-private.api.addr : "localhost:9090"
-
-http.api : ["eth","debug","net"]
 ```
 
 ### Beacon Chain (Consensus Layer)
@@ -409,7 +342,7 @@ not suit how Erigon works. Erigon is designed to handle many blocks simultaneous
 efficiently. Therefore, it would be better for Erigon to handle the blocks independently instead of relying on the
 Engine API.
 
-#### Caplin's Usage.
+#### Caplin's Usage
 
 Caplin is be enabled by default. to disable it and enable the Engine API, use the `--externalcl` flag. from that point
 on, an external Consensus Layer will not be need
@@ -445,9 +378,10 @@ Quote your path if it has spaces.
 Key features
 ============
 
-<code>🔬 See more
-detailed [overview of functionality and current limitations](https://ledgerwatch.github.io/turbo_geth_release.html). It
-is being updated on recurring basis.</code>
+### Faster Initial Sync
+
+On good network bandwidth EthereumMainnet FullNode syncs in 3
+hours: [OtterSync](https://erigon.substack.com/p/erigon-3-alpha-2-introducing-blazingly) can sync
 
 ### More Efficient State Storage
 
@@ -460,190 +394,46 @@ DB. That reduces write amplification and DB inserts are orders of magnitude quic
 
 <code> 🔬 See our detailed ETL explanation [here](https://github.com/erigontech/erigon/blob/main/erigon-lib/etl/README.md).</code>
 
-**Plain state**.
+**Plain state**
 
 **Single accounts/state trie**. Erigon uses a single Merkle trie for both accounts and the storage.
 
-### Faster Initial Sync
-
-Erigon uses a rearchitected full sync algorithm from
-[Go-Ethereum](https://github.com/ethereum/go-ethereum) that is split into
-"stages".
-
-<code>🔬 See more detailed explanation in the [Staged Sync Readme](/eth/stagedsync/README.md)</code>
-
-It uses the same network primitives and is compatible with regular go-ethereum nodes that are using full sync, you do
-not need any special sync capabilities for Erigon to sync.
-
-When reimagining the full sync, with focus on batching data together and minimize DB overwrites. That makes it possible
-to sync Ethereum mainnet in under 2 days if you have a fast enough network connection and an SSD drive.
-
-Examples of stages are:
-
-* Downloading headers;
-
-* Downloading block bodies;
-
-* Recovering senders' addresses;
-
-* Executing blocks;
-
-* Validating root hashes and building intermediate hashes for the state Merkle trie;
-
-* [...]
+<code> 🔬 [Staged Sync Readme](/eth/stagedsync/README.md)</code>
 
 ### JSON-RPC daemon
 
 Most of Erigon's components (txpool, rpcdaemon, snapshots downloader, sentry, ...) can work inside Erigon and as
-independent process.
-
-To enable built-in RPC server: `--http` and `--ws` (sharing same port with http)
-
-Run RPCDaemon as separated process: this daemon can use local DB (with running Erigon or on snapshot of a database) or
-remote DB (run on another server). <code>🔬 See [RPC-Daemon docs](./cmd/rpcdaemon/README.md)</code>
-
-#### **For remote DB**
-
-This works regardless of whether RPC daemon is on the same computer with Erigon, or on a different one. They use TPC
-socket connection to pass data between them. To use this mode, run Erigon in one terminal window
+independent process on same Server (or another Server). Example:
 
 ```sh
-make erigon
-./build/bin/erigon --private.api.addr=localhost:9090 --http=false
-make rpcdaemon
-./build/bin/rpcdaemon --private.api.addr=localhost:9090 --http.api=eth,erigon,web3,net,debug,trace,txpool
+make erigon rpcdaemon
+./build/bin/erigon --datadir=/my --http=false
+# To run RPCDaemon as separated process: use same `--datadir` as Erigon
+./build/bin/rpcdaemon --datadir=/my --http.api=eth,erigon,web3,net,debug,trace,txpool --ws
 ```
 
-#### **gRPC ports**
+- Supported JSON-RPC
+  calls: [eth](./cmd/rpcdaemon/commands/eth_api.go), [debug](./cmd/rpcdaemon/commands/debug_api.go), [net](./cmd/rpcdaemon/commands/net_api.go), [web3](./cmd/rpcdaemon/commands/web3_api.go)
+- increase throughput by: `--rpc.batch.concurrency`, `--rpc.batch.limit`, `--db.read.concurrency`
+- increase throughput by disabling: `--http.compression`, `--ws.compression`
 
-`9090` erigon, `9091` sentry, `9092` consensus engine, `9093` torrent downloader, `9094` transactions pool
-
-Supported JSON-RPC calls ([eth](./cmd/rpcdaemon/commands/eth_api.go), [debug](./cmd/rpcdaemon/commands/debug_api.go)
-, [net](./cmd/rpcdaemon/commands/net_api.go), [web3](./cmd/rpcdaemon/commands/web3_api.go)):
-
-For a details on the implementation status of each
-command, [see this table](./cmd/rpcdaemon/README.md#rpc-implementation-status).
-
-### Run all components by docker-compose
-
-Docker allows for building and running Erigon via containers. This alleviates the need for installing build dependencies
-onto the host OS.
-
-#### Optional: Setup dedicated user
-
-User UID/GID need to be synchronized between the host OS and container so files are written with correct permission.
-
-You may wish to setup a dedicated user/group on the host OS, in which case the following `make` targets are available.
-
-```sh
-# create "erigon" user
-make user_linux
-# or
-make user_macos
-```
-
-#### Environment Variables
-
-There is a `.env.example` file in the root of the repo.
-
-* `DOCKER_UID` - The UID of the docker user
-* `DOCKER_GID` - The GID of the docker user
-* `XDG_DATA_HOME` - The data directory which will be mounted to the docker containers
-
-If not specified, the UID/GID will use the current user.
-
-A good choice for `XDG_DATA_HOME` is to use the `~erigon/.ethereum` directory created by helper
-targets `make user_linux` or `make user_macos`.
-
-#### Check: Permissions
-
-In all cases, `XDG_DATA_HOME` (specified or default) must be writeable by the user UID/GID in docker, which will be
-determined by the `DOCKER_UID` and `DOCKER_GID` at build time.
-
-If a build or service startup is failing due to permissions, check that all the directories, UID, and GID controlled by
-these environment variables are correct.
-
-#### Run
-
-Next command starts: Erigon on port 30303, rpcdaemon on port 8545, prometheus on port 9090, and grafana on port 3000.
-
-```sh
-#
-# Will mount ~/.local/share/erigon to /home/erigon/.local/share/erigon inside container
-#
-make docker-compose
-
-#
-# or
-#
-# if you want to use a custom data directory
-# or, if you want to use different uid/gid for a dedicated user
-#
-# To solve this, pass in the uid/gid parameters into the container.
-#
-# DOCKER_UID: the user id
-# DOCKER_GID: the group id
-# XDG_DATA_HOME: the data directory (default: ~/.local/share)
-#
-# Note: /preferred/data/folder must be read/writeable on host OS by user with UID/GID given
-#       if you followed above instructions
-#
-# Note: uid/gid syntax below will automatically use uid/gid of running user so this syntax
-#       is intended to be run via the dedicated user setup earlier
-#
-DOCKER_UID=$(id -u) DOCKER_GID=$(id -g) XDG_DATA_HOME=/preferred/data/folder DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 make docker-compose
-
-#
-# if you want to run the docker, but you are not logged in as the $ERIGON_USER
-# then you'll need to adjust the syntax above to grab the correct uid/gid
-#
-# To run the command via another user, use
-#
-ERIGON_USER=erigon
-sudo -u ${ERIGON_USER} DOCKER_UID=$(id -u ${ERIGON_USER}) DOCKER_GID=$(id -g ${ERIGON_USER}) XDG_DATA_HOME=~${ERIGON_USER}/.ethereum DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 make docker-compose
-```
-
-Makefile creates the initial directories for erigon, prometheus and grafana. The PID namespace is shared between erigon
-and rpcdaemon which is required to open Erigon's DB from another process (RPCDaemon local-mode).
-See: https://github.com/erigontech/erigon/pull/2392/files
-
-If your docker installation requires the docker daemon to run as root (which is by default), you will need to prefix
-the command above with `sudo`. However, it is sometimes recommended running docker (and therefore its containers) as a
-non-root user for security reasons. For more information about how to do this, refer to
-[this article](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user).
-
-Windows support for docker-compose is not ready yet. Please help us with .ps1 port.
+<code>🔬 See [RPC-Daemon docs](./cmd/rpcdaemon/README.md)</code>
 
 ### Grafana dashboard
 
 `docker compose up prometheus grafana`, [detailed docs](./cmd/prometheus/Readme.md).
 
-###
-
-old data
-
-Disabled by default. To enable see `./build/bin/erigon --help` for flags `--prune`
-
-Documentation
-==============
-
-The `./docs` directory includes a lot of useful but outdated documentation. For code located
-in the `./cmd` directory, their respective documentation can be found in `./cmd/*/README.md`.
-A more recent collation of developments and happenings in Erigon can be found in the
-[Erigon Blog](https://erigon.substack.com/).
-
-
-
 FAQ
 ================
 
-### How much RAM do I need
+### Use as library
 
-- Baseline (ext4 SSD): 16Gb RAM sync takes 6 days, 32Gb - 5 days, 64Gb - 4 days
-- +1 day on "zfs compression=off". +2 days on "zfs compression=on" (2x compression ratio). +3 days on btrfs.
-- -1 day on NVMe
-
-Detailed explanation: [./docs/programmers_guide/db_faq.md](./docs/programmers_guide/db_faq.md)
+```
+# please use git branch name (or commit hash). don't use git tags
+go mod edit -replace github.com/erigontech/erigon-lib=github.com/erigontech/erigon/erigon-lib@5498f854e44df5c8f0804ff4f0747c0dec3caad5
+go get github.com/erigontech/erigon@main
+go mod tidy
+```
 
 ### Default Ports and Firewalls
 
@@ -724,20 +514,22 @@ RFC 922, Section 7
 Same
 in [IpTables syntax](https://ethereum.stackexchange.com/questions/6386/how-to-prevent-being-blacklisted-for-running-an-ethereum-client/13068#13068)
 
-### How to run erigon as a separate user? (e.g. as a `systemd` daemon)
+### Run as a separate user - `systemd` example
 
 Running erigon from `build/bin` as a separate user might produce an error:
 
-    error while loading shared libraries: libsilkworm_capi.so: cannot open shared object file: No such file or directory
+```sh
+error while loading shared libraries: libsilkworm_capi.so: cannot open shared object file: No such file or directory
+```
 
 The library needs to be *installed* for another user using `make DIST=<path> install`. You could use `$HOME/erigon`
 or `/opt/erigon` as the installation path, for example:
 
-    make DIST=/opt/erigon install
+```sh
+make DIST=/opt/erigon install
+```
 
-and then run `/opt/erigon/erigon`.
-
-### How to get diagnostic for bug report?
+### Grab diagnostic for bug report
 
 - Get stack trace: `kill -SIGUSR1 <pid>`, get trace and stop: `kill -6 <pid>`
 - Get CPU profiling: add `--pprof` flag and run  
@@ -745,7 +537,7 @@ and then run `/opt/erigon/erigon`.
 - Get RAM profiling: add `--pprof` flag and run  
   `go tool pprof -inuse_space -png  http://127.0.0.1:6060/debug/pprof/heap > mem.png`
 
-### How to run local devnet?
+### Run local devnet
 
 <code> 🔬 Detailed explanation is [here](/DEV_CHAIN.md).</code>
 
@@ -757,21 +549,161 @@ UID/GID (1000).
 More details
 in [post](https://www.fullstaq.com/knowledge-hub/blogs/docker-and-the-host-filesystem-owner-matching-problem)
 
-### How to run public RPC api
+### Public RPC
 
 - `--txpool.nolocals=true`
 - don't add `admin` in `--http.api` list
-- to increase throughput may need
-  increase/decrease: `--db.read.concurrency`, `--rpc.batch.concurrency`, `--rpc.batch.limit`
+- `--http.corsdomain="*"` is bad-practice: set exact hostname or IP
+- protect from DOS by reducing: `--rpc.batch.concurrency`, `--rpc.batch.limit`
 
-### Run RaspberyPI
+### RaspberyPI
 
 https://github.com/mathMakesArt/Erigon-on-RPi-4
+
+### Run all components by docker-compose
+
+Docker allows for building and running Erigon via containers. This alleviates the need for installing build dependencies
+onto the host OS.
+
+#### Optional: Setup dedicated user
+
+User UID/GID need to be synchronized between the host OS and container so files are written with correct permission.
+
+You may wish to setup a dedicated user/group on the host OS, in which case the following `make` targets are available.
+
+```sh
+# create "erigon" user
+make user_linux
+# or
+make user_macos
+```
+
+#### Environment Variables
+
+There is a `.env.example` file in the root of the repo.
+
+* `DOCKER_UID` - The UID of the docker user
+* `DOCKER_GID` - The GID of the docker user
+* `XDG_DATA_HOME` - The data directory which will be mounted to the docker containers
+
+If not specified, the UID/GID will use the current user.
+
+A good choice for `XDG_DATA_HOME` is to use the `~erigon/.ethereum` directory created by helper
+targets `make user_linux` or `make user_macos`.
+
+#### Run
+
+Check permissions: In all cases, `XDG_DATA_HOME` (specified or default) must be writeable by the user UID/GID in docker,
+which will be determined by the `DOCKER_UID` and `DOCKER_GID` at build time. If a build or service startup is failing
+due to permissions, check that all the directories, UID, and GID controlled by these environment variables are correct.
+
+Next command starts: Erigon on port 30303, rpcdaemon on port 8545, prometheus on port 9090, and grafana on port 3000.
+
+```sh
+#
+# Will mount ~/.local/share/erigon to /home/erigon/.local/share/erigon inside container
+#
+make docker-compose
+
+#
+# or
+#
+# if you want to use a custom data directory
+# or, if you want to use different uid/gid for a dedicated user
+#
+# To solve this, pass in the uid/gid parameters into the container.
+#
+# DOCKER_UID: the user id
+# DOCKER_GID: the group id
+# XDG_DATA_HOME: the data directory (default: ~/.local/share)
+#
+# Note: /preferred/data/folder must be read/writeable on host OS by user with UID/GID given
+#       if you followed above instructions
+#
+# Note: uid/gid syntax below will automatically use uid/gid of running user so this syntax
+#       is intended to be run via the dedicated user setup earlier
+#
+DOCKER_UID=$(id -u) DOCKER_GID=$(id -g) XDG_DATA_HOME=/preferred/data/folder DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 make docker-compose
+
+#
+# if you want to run the docker, but you are not logged in as the $ERIGON_USER
+# then you'll need to adjust the syntax above to grab the correct uid/gid
+#
+# To run the command via another user, use
+#
+ERIGON_USER=erigon
+sudo -u ${ERIGON_USER} DOCKER_UID=$(id -u ${ERIGON_USER}) DOCKER_GID=$(id -g ${ERIGON_USER}) XDG_DATA_HOME=~${ERIGON_USER}/.ethereum DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 make docker-compose
+```
+
+Makefile creates the initial directories for erigon, prometheus and grafana. The PID namespace is shared between erigon
+and rpcdaemon which is required to open Erigon's DB from another process (RPCDaemon local-mode).
+See: https://github.com/erigontech/erigon/pull/2392/files
+
+If your docker installation requires the docker daemon to run as root (which is by default), you will need to prefix
+the command above with `sudo`. However, it is sometimes recommended running docker (and therefore its containers) as a
+non-root user for security reasons. For more information about how to do this, refer to
+[this article](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user).
 
 ### How to change db pagesize
 
 [post](https://github.com/erigontech/erigon/blob/main/cmd/integration/Readme.md#copy-data-to-another-db)
 
+### Erigon3 perf tricks
+
+- on BorMainnet may help: `--sync.loop.block.limit=10_000`
+- on cloud-drives (good throughput, bad latency) - can enable OS's brain to pre-fetch: `SNAPSHOT_MADV_RND=false`
+- can lock latest state in RAM - to prevent from eviction (node may face high historical RPC traffic without impacting
+  Chain-Tip perf):
+
+```
+vmtouch -vdlw /mnt/erigon/snapshots/domain/*bt
+ls /mnt/erigon/snapshots/domain/*.kv | parallel vmtouch -vdlw
+
+# if it failing with "can't allocate memory", try: 
+sync && sudo sysctl vm.drop_caches=3
+echo 1 > /proc/sys/vm/compact_memory
+```
+
+### Windows
+
+Windows users may run erigon in 3 possible ways:
+
+* Build executable binaries natively for Windows using provided `wmake.ps1` PowerShell script. Usage syntax is the same
+  as `make` command so you have to run `.\wmake.ps1 [-target] <targetname>`. Example: `.\wmake.ps1 erigon` builds erigon
+  executable. All binaries are placed in `.\build\bin\` subfolder. There are some requirements for a successful native
+  build on windows :
+    * [Git](https://git-scm.com/downloads) for Windows must be installed. If you're cloning this repository is very
+      likely you already have it
+    * [GO Programming Language](https://golang.org/dl/) must be installed. Minimum required version is 1.22
+    * GNU CC Compiler at least version 13 (is highly suggested that you install `chocolatey` package manager - see
+      following point)
+    * If you need to build MDBX tools (i.e. `.\wmake.ps1 db-tools`)
+      then [Chocolatey package manager](https://chocolatey.org/) for Windows must be installed. By Chocolatey you need
+      to install the following components : `cmake`, `make`, `mingw` by `choco install cmake make mingw`. Make sure
+      Windows System "Path" variable has:
+      C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin
+
+  **Important note about Anti-Viruses**
+  During MinGW's compiler detection phase some temporary executables are generated to test compiler capabilities. It's
+  been reported some anti-virus programs detect those files as possibly infected by `Win64/Kryptic.CIS` trojan horse (or
+  a variant of it). Although those are false positives we have no control over 100+ vendors of security products for
+  Windows and their respective detection algorithms and we understand this might make your experience with Windows
+  builds uncomfortable. To workaround the issue you might either set exclusions for your antivirus specifically
+  for `build\bin\mdbx\CMakeFiles` sub-folder of the cloned repo or you can run erigon using the following other two
+  options
+
+* Use Docker :  see [docker-compose.yml](./docker-compose.yml)
+
+* Use WSL (Windows Subsystem for Linux) **strictly on version 2**. Under this option you can build Erigon just as you
+  would on a regular Linux distribution. You can point your data also to any of the mounted Windows partitions (
+  eg. `/mnt/c/[...]`, `/mnt/d/[...]` etc) but in such case be advised performance is impacted: this is due to the fact
+  those mount points use `DrvFS` which is a [network file system](#blocks-execution-is-slow-on-cloud-network-drives)
+  and, additionally, MDBX locks the db for exclusive access which implies only one process at a time can access data.
+  This has consequences on the running of `rpcdaemon` which has to be configured as [Remote DB](#for-remote-db) even if
+  it is executed on the very same computer. If instead your data is hosted on the native Linux filesystem non
+  limitations apply.
+  **Please also note the default WSL2 environment has its own IP address which does not match the one of the network
+  interface of Windows host: take this into account when configuring NAT for port 30303 on your router.**
 
 Getting in touch
 ================
@@ -779,8 +711,15 @@ Getting in touch
 ### Erigon Discord Server
 
 The main discussions are happening on our Discord server. To get an invite, send an email to `bloxster [at] proton.me`
-with
-your name, occupation, a brief explanation of why you want to join the Discord, and how you heard about Erigon.
+with your name, occupation, a brief explanation of why you want to join the Discord, and how you heard about Erigon.
+
+### Blog
+
+**[erigon.substack.com](https://erigon.substack.com/)**
+
+### Twitter
+
+[x.com/ErigonEth](https://x.com/ErigonEth)
 
 ### Reporting security issues/concerns
 
@@ -811,23 +750,23 @@ Next tools show correct memory usage of Erigon:
   browser `localhost:3000`, credentials `admin/admin`)
 - `cat /proc/<PID>/smaps`
 
-  Erigon uses ~4Gb of RAM during genesis sync and ~1Gb during normal work. OS pages cache can utilize unlimited amount
-  of
-  memory.
+Erigon uses ~4Gb of RAM during genesis sync and ~1Gb during normal work. OS pages cache can utilize unlimited amount of
+memory.
 
-  **Warning:** Multiple instances of Erigon on same machine will touch Disk concurrently, it impacts performance - one
-  of
-  main Erigon optimisations: "reduce Disk random access".
-  "Blocks Execution stage" still does many random reads - this is reason why it's slowest stage. We do not recommend
-  running
-  multiple genesis syncs on same Disk. If genesis sync passed, then it's fine to run multiple Erigon instances on same
-  Disk.
+**Warning:** Multiple instances of Erigon on same machine will touch Disk concurrently, it impacts performance - one of
+main Erigon optimisations: "reduce Disk random access".
+"Blocks Execution stage" still does many random reads - this is reason why it's slowest stage. We do not recommend
+running multiple genesis syncs on same Disk. If genesis sync passed, then it's fine to run multiple Erigon instances on
+same Disk.
 
-### Blocks Execution is slow on cloud-network-drives
+### Cloud network drives
 
-Please read https://github.com/erigontech/erigon/issues/1516#issuecomment-811958891
+(Like gp3)
+You may read: https://github.com/erigontech/erigon/issues/1516#issuecomment-811958891
 In short: network-disks are bad for blocks execution - because blocks execution reading data from db non-parallel
 non-batched way.
+Tricks: if you throw anough RAM and set env variable `ERIGON_SNAPSHOT_MADV_RND=false` - then Erigon will work
+good-enough on Cloud drives - in cost of higher IO.
 
 ### Filesystem's background features are expensive
 
@@ -835,7 +774,7 @@ For example: btrfs's autodefrag option - may increase write IO 100x times
 
 ### Gnome Tracker can kill Erigon
 
-[Gnome Tracker](https://wiki.gnome.org/Projects/Tracker) - detecting miners and kill them.
+[Gnome Tracker](https://wiki.gnome.org/Attic/Tracker) - detecting miners and kill them.
 
 ### the --mount option requires BuildKit error
 
@@ -846,19 +785,3 @@ XDG_DATA_HOME=/preferred/data/folder DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=
 ```
 
 ---------
-
-### Erigon3 perf tricks
-
-- `--sync.loop.block.limit=10_000 --batchSize=2g` - likely will help for sync speed.
-- on cloud-drives (good throughput, bad latency) - can enable OS's brain to pre-fetch: `SNAPSHOT_MADV_RND=false`
-- can lock latest state in RAM - to prevent from eviction (node may face high historical RPC traffic without impacting
-  Chain-Tip perf):
-
-```
-vmtouch -vdlw /mnt/erigon/snapshots/domain/*bt
-ls /mnt/erigon/snapshots/domain/*.kv | parallel vmtouch -vdlw
-
-# if it failing with "can't allocate memory", try: 
-sync && sudo sysctl vm.drop_caches=3
-echo 1 > /proc/sys/vm/compact_memory
-```
