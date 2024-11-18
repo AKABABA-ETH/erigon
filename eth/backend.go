@@ -75,10 +75,6 @@ import (
 	"github.com/erigontech/erigon-lib/log/v3"
 	libsentry "github.com/erigontech/erigon-lib/p2p/sentry"
 	libstate "github.com/erigontech/erigon-lib/state"
-	"github.com/erigontech/erigon-lib/txpool"
-	"github.com/erigontech/erigon-lib/txpool/txpoolcfg"
-	"github.com/erigontech/erigon-lib/txpool/txpoolutil"
-	libtypes "github.com/erigontech/erigon-lib/types"
 	"github.com/erigontech/erigon-lib/wrap"
 	"github.com/erigontech/erigon/cl/clparams"
 	"github.com/erigontech/erigon/cl/persistence/format/snapshot_format/getters"
@@ -134,6 +130,9 @@ import (
 	"github.com/erigontech/erigon/turbo/snapshotsync/freezeblocks"
 	stages2 "github.com/erigontech/erigon/turbo/stages"
 	"github.com/erigontech/erigon/turbo/stages/headerdownload"
+	"github.com/erigontech/erigon/txnprovider/txpool"
+	"github.com/erigontech/erigon/txnprovider/txpool/txpoolcfg"
+	"github.com/erigontech/erigon/txnprovider/txpool/txpoolutil"
 )
 
 // Config contains the configuration options of the ETH protocol.
@@ -194,7 +193,7 @@ type Ethereum struct {
 
 	txPoolDB                kv.RwDB
 	txPool                  *txpool.TxPool
-	newTxs                  chan libtypes.Announcements
+	newTxs                  chan txpool.Announcements
 	txPoolFetch             *txpool.Fetch
 	txPoolSend              *txpool.Send
 	txPoolGrpcServer        txpoolproto.TxpoolServer
@@ -215,10 +214,10 @@ type Ethereum struct {
 	silkwormRPCDaemonService *silkworm.RpcDaemonService
 	silkwormSentryService    *silkworm.SentryService
 
-	polygonSyncService  polygonsync.Service
+	polygonSyncService  *polygonsync.Service
 	polygonDownloadSync *stagedsync.Sync
-	polygonBridge       bridge.PolygonBridge
-	heimdallService     heimdall.Service
+	polygonBridge       *bridge.Service
+	heimdallService     *heimdall.Service
 	stopNode            func() error
 }
 
@@ -503,6 +502,7 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 	// setup periodic logging and prometheus updates
 	go mem.LogMemStats(ctx, logger)
 	go disk.UpdateDiskStats(ctx, logger)
+	go dbg.SaveHeapProfileNearOOMPeriodically(ctx, dbg.SaveHeapWithLogger(&logger))
 
 	var currentBlock *types.Block
 	if err := backend.chainDB.View(context.Background(), func(tx kv.Tx) error {
@@ -531,8 +531,8 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 	}
 
 	var heimdallClient heimdall.HeimdallClient
-	var polygonBridge bridge.Service
-	var heimdallService heimdall.Service
+	var polygonBridge *bridge.Service
+	var heimdallService *heimdall.Service
 	var bridgeRPC *bridge.BackendServer
 	var heimdallRPC *heimdall.BackendServer
 
@@ -544,18 +544,18 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 		if config.PolygonSync {
 			borConfig := consensusConfig.(*borcfg.BorConfig)
 
-			polygonBridge = bridge.NewBridge(bridge.Config{
+			polygonBridge = bridge.NewService(bridge.ServiceConfig{
 				Store:        bridgeStore,
 				Logger:       logger,
 				BorConfig:    borConfig,
 				EventFetcher: heimdallClient,
 			})
 
-			heimdallService = heimdall.AssembleService(heimdall.ServiceConfig{
-				Store:       heimdallStore,
-				BorConfig:   borConfig,
-				HeimdallURL: config.HeimdallURL,
-				Logger:      logger,
+			heimdallService = heimdall.NewService(heimdall.ServiceConfig{
+				Store:     heimdallStore,
+				BorConfig: borConfig,
+				Client:    heimdallClient,
+				Logger:    logger,
 			})
 
 			bridgeRPC = bridge.NewBackendServer(ctx, polygonBridge)
@@ -652,7 +652,7 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 		//cacheConfig.MetricsLabel = "txpool"
 		//cacheConfig.StateV3 = config.HistoryV3w
 
-		backend.newTxs = make(chan libtypes.Announcements, 1024)
+		backend.newTxs = make(chan txpool.Announcements, 1024)
 		//defer close(newTxs)
 		backend.txPoolDB, backend.txPool, backend.txPoolFetch, backend.txPoolSend, backend.txPoolGrpcServer, err = txpoolutil.AllComponents(
 			ctx, config.TxPool, kvcache.NewDummy(), backend.newTxs, chainKv, backend.sentriesClient.Sentries(), stateDiffClient, misc.Eip1559FeeCalculator, logger,
@@ -784,7 +784,7 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 	}
 
 	// Initialize ethbackend
-	ethBackendRPC := privateapi.NewEthBackendServer(ctx, backend, backend.chainDB, backend.notifications.Events, blockReader, logger, latestBlockBuiltStore)
+	ethBackendRPC := privateapi.NewEthBackendServer(ctx, backend, backend.chainDB, backend.notifications, blockReader, logger, latestBlockBuiltStore)
 	// initialize engine backend
 
 	blockSnapBuildSema := semaphore.NewWeighted(int64(dbg.BuildSnapshotAllowance))
@@ -1003,10 +1003,10 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 			p2pConfig.MaxPeers,
 			statusDataProvider,
 			executionRpc,
-			blockReader,
 			config.LoopBlockLimit,
 			polygonBridge,
 			heimdallService,
+			backend.notifications,
 		)
 
 		// we need to initiate download before the heimdall services start rather than
@@ -1016,7 +1016,7 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 		backend.polygonDownloadSync = stagedsync.New(backend.config.Sync, stagedsync.DownloadSyncStages(
 			backend.sentryCtx, stagedsync.StageSnapshotsCfg(
 				backend.chainDB, *backend.sentriesClient.ChainConfig, config.Sync, dirs, blockRetire, backend.downloaderClient,
-				blockReader, backend.notifications, backend.agg, false, false, backend.silkworm, config.Prune,
+				blockReader, backend.notifications, backend.agg, false, false, false, backend.silkworm, config.Prune,
 			)), nil, nil, backend.logger)
 
 		// these range extractors set the db to the local db instead of the chain db
