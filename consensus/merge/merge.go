@@ -52,7 +52,7 @@ var (
 	// errInvalidNonce is returned if the nonce is non-zero.
 	errInvalidNonce = errors.New("invalid nonce")
 
-	// errInvalidUncleHash is returned if a block contains an non-empty uncle list.
+	// errInvalidUncleHash is returned if a block contains a non-empty uncle list.
 	errInvalidUncleHash = errors.New("non empty uncle hash")
 
 	errOlderBlockTime = errors.New("timestamp older than parent")
@@ -322,6 +322,7 @@ func (s *Merge) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 func (s *Merge) Seal(chain consensus.ChainHeaderReader, blockWithReceipts *types.BlockWithReceipts, results chan<- *types.BlockWithReceipts, stop <-chan struct{}) error {
 	block := blockWithReceipts.Block
 	receipts := blockWithReceipts.Receipts
+	requests := blockWithReceipts.Requests
 	if !misc.IsPoSHeader(block.HeaderNoCopy()) {
 		return s.eth1Engine.Seal(chain, blockWithReceipts, results, stop)
 	}
@@ -330,7 +331,7 @@ func (s *Merge) Seal(chain consensus.ChainHeaderReader, blockWithReceipts *types
 	header.Nonce = ProofOfStakeNonce
 
 	select {
-	case results <- &types.BlockWithReceipts{Block: block.WithSeal(header), Receipts: receipts}:
+	case results <- &types.BlockWithReceipts{Block: block.WithSeal(header), Receipts: receipts, Requests: requests}:
 	default:
 		log.Warn("Sealing result is not read", "sealhash", block.Hash())
 	}

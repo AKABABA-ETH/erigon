@@ -39,7 +39,7 @@ func getBeaconStateCacheFilename(blockRoot libcommon.Hash) string {
 	return fmt.Sprintf("%x.cache", blockRoot)
 }
 
-func (f *forkGraphDisk) readBeaconStateFromDisk(blockRoot libcommon.Hash) (bs *state.CachingBeaconState, err error) {
+func (f *forkGraphDisk) readBeaconStateFromDisk(blockRoot libcommon.Hash, out *state.CachingBeaconState) (bs *state.CachingBeaconState, err error) {
 	var file afero.File
 	f.stateDumpLock.Lock()
 	defer f.stateDumpLock.Unlock()
@@ -77,11 +77,16 @@ func (f *forkGraphDisk) readBeaconStateFromDisk(blockRoot libcommon.Hash) (bs *s
 		return nil, fmt.Errorf("failed to read snappy buffer: %w, root: %x", err, blockRoot)
 	}
 	f.sszBuffer = f.sszBuffer[:n]
-	bs = state.New(f.beaconCfg)
+	if out == nil {
+		bs = state.New(f.beaconCfg)
+	} else {
+		bs = out
+	}
 
 	if err = bs.DecodeSSZ(f.sszBuffer, int(v[0])); err != nil {
 		return nil, fmt.Errorf("failed to decode beacon state: %w, root: %x, len: %d, decLen: %d, bs: %+v", err, blockRoot, n, len(f.sszBuffer), bs)
 	}
+
 	// decode the cache file
 	cacheFile, err := f.fs.Open(getBeaconStateCacheFilename(blockRoot))
 	if err != nil {
@@ -89,7 +94,12 @@ func (f *forkGraphDisk) readBeaconStateFromDisk(blockRoot libcommon.Hash) (bs *s
 	}
 	defer cacheFile.Close()
 
-	if err := bs.DecodeCaches(cacheFile); err != nil {
+	b := bytes.Buffer{}
+	if _, err := io.Copy(&b, cacheFile); err != nil {
+		return nil, err
+	}
+
+	if err := bs.DecodeCaches(&b); err != nil {
 		return nil, err
 	}
 
@@ -101,6 +111,13 @@ func (f *forkGraphDisk) DumpBeaconStateOnDisk(blockRoot libcommon.Hash, bs *stat
 	if !forced && bs.Slot()%dumpSlotFrequency != 0 {
 		return
 	}
+	f.stateDumpLock.Lock()
+	unlockOnDefer := true
+	defer func() {
+		if unlockOnDefer {
+			f.stateDumpLock.Unlock()
+		}
+	}()
 	// Truncate and then grow the buffer to the size of the state.
 	f.sszBuffer, err = bs.EncodeSSZ(f.sszBuffer[:0])
 	if err != nil {
@@ -153,8 +170,7 @@ func (f *forkGraphDisk) DumpBeaconStateOnDisk(blockRoot libcommon.Hash, bs *stat
 		log.Error("failed to sync dumped file", "err", err)
 		return
 	}
-
-	f.stateDumpLock.Lock()
+	unlockOnDefer = false
 	go func() {
 		cacheFile, err := f.fs.OpenFile(getBeaconStateCacheFilename(blockRoot), os.O_TRUNC|os.O_CREATE|os.O_RDWR, 0o755)
 		if err != nil {

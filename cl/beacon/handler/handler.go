@@ -92,13 +92,14 @@ type ApiHandler struct {
 	logger    log.Logger
 
 	// Validator data structures
-	validatorParams     *validator_params.ValidatorParams
-	blobBundles         *lru.Cache[common.Bytes48, BlobBundle] // Keep recent bundled blobs from the execution layer.
-	engine              execution_client.ExecutionEngine
-	syncMessagePool     sync_contribution_pool.SyncContributionPool
-	committeeSub        *committee_subscription.CommitteeSubscribeMgmt
-	attestationProducer attestation_producer.AttestationDataProducer
-	aggregatePool       aggregation.AggregationPool
+	validatorParams                    *validator_params.ValidatorParams
+	blobBundles                        *lru.Cache[common.Bytes48, BlobBundle] // Keep recent bundled blobs from the execution layer.
+	engine                             execution_client.ExecutionEngine
+	syncMessagePool                    sync_contribution_pool.SyncContributionPool
+	committeeSub                       *committee_subscription.CommitteeSubscribeMgmt
+	attestationProducer                attestation_producer.AttestationDataProducer
+	slotWaitedForAttestationProduction *lru.Cache[uint64, struct{}]
+	aggregatePool                      aggregation.AggregationPool
 
 	// services
 	syncCommitteeMessagesService     services.SyncCommitteeMessagesService
@@ -152,20 +153,25 @@ func NewApiHandler(
 	if err != nil {
 		panic(err)
 	}
+	slotWaitedForAttestationProduction, err := lru.New[uint64, struct{}]("slotWaitedForAttestationProduction", 1024)
+	if err != nil {
+		panic(err)
+	}
 	return &ApiHandler{
-		logger:               logger,
-		validatorParams:      validatorParams,
-		o:                    sync.Once{},
-		netConfig:            netConfig,
-		ethClock:             ethClock,
-		beaconChainCfg:       beaconChainConfig,
-		indiciesDB:           indiciesDB,
-		forkchoiceStore:      forkchoiceStore,
-		operationsPool:       operationsPool,
-		blockReader:          rcsn,
-		syncedData:           syncedData,
-		stateReader:          stateReader,
-		caplinStateSnapshots: caplinStateSnapshots,
+		logger:                             logger,
+		validatorParams:                    validatorParams,
+		o:                                  sync.Once{},
+		netConfig:                          netConfig,
+		ethClock:                           ethClock,
+		beaconChainCfg:                     beaconChainConfig,
+		indiciesDB:                         indiciesDB,
+		forkchoiceStore:                    forkchoiceStore,
+		operationsPool:                     operationsPool,
+		blockReader:                        rcsn,
+		syncedData:                         syncedData,
+		stateReader:                        stateReader,
+		caplinStateSnapshots:               caplinStateSnapshots,
+		slotWaitedForAttestationProduction: slotWaitedForAttestationProduction,
 		randaoMixesPool: sync.Pool{New: func() interface{} {
 			return solid.NewHashVector(int(beaconChainConfig.EpochsPerHistoricalVector))
 		}},
@@ -222,12 +228,12 @@ func (a *ApiHandler) init() {
 			if a.routerCfg.Node {
 				r.Route("/node", func(r chi.Router) {
 					r.Get("/health", a.GetEthV1NodeHealth)
-					r.Get("/version", a.GetEthV1NodeVersion)
-					r.Get("/peer_count", a.GetEthV1NodePeerCount)
-					r.Get("/peers", a.GetEthV1NodePeersInfos)
-					r.Get("/peers/{peer_id}", a.GetEthV1NodePeerInfos)
-					r.Get("/identity", a.GetEthV1NodeIdentity)
-					r.Get("/syncing", a.GetEthV1NodeSyncing)
+					r.Get("/version", beaconhttp.HandleEndpointFunc(a.GetEthV1NodeVersion))
+					r.Get("/peer_count", beaconhttp.HandleEndpointFunc(a.GetEthV1NodePeerCount))
+					r.Get("/peers", beaconhttp.HandleEndpointFunc(a.GetEthV1NodePeersInfos))
+					r.Get("/peers/{peer_id}", beaconhttp.HandleEndpointFunc(a.GetEthV1NodePeerInfos))
+					r.Get("/identity", beaconhttp.HandleEndpointFunc(a.GetEthV1NodeIdentity))
+					r.Get("/syncing", beaconhttp.HandleEndpointFunc(a.GetEthV1NodeSyncing))
 				})
 			}
 

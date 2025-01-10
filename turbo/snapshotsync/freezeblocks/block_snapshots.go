@@ -48,6 +48,7 @@ import (
 	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon-lib/metrics"
 	"github.com/erigontech/erigon-lib/recsplit"
+	"github.com/erigontech/erigon-lib/rlp"
 	"github.com/erigontech/erigon-lib/seg"
 	"github.com/erigontech/erigon/core/rawdb"
 	"github.com/erigontech/erigon/core/rawdb/blockio"
@@ -59,7 +60,6 @@ import (
 	"github.com/erigontech/erigon/polygon/bor/bordb"
 	"github.com/erigontech/erigon/polygon/bridge"
 	"github.com/erigontech/erigon/polygon/heimdall"
-	"github.com/erigontech/erigon/rlp"
 	"github.com/erigontech/erigon/turbo/services"
 	"github.com/erigontech/erigon/turbo/snapshotsync"
 	"github.com/erigontech/erigon/txnprovider/txpool"
@@ -586,9 +586,9 @@ func DumpTxs(ctx context.Context, db kv.RoDB, chainConfig *chain.Config, blockFr
 
 	numBuf := make([]byte, 8)
 
-	parse := func(ctx *txpool.TxParseContext, v, valueBuf []byte, senders []common2.Address, j int) ([]byte, error) {
+	parse := func(ctx *txpool.TxnParseContext, v, valueBuf []byte, senders []common2.Address, j int) ([]byte, error) {
 		var sender [20]byte
-		slot := txpool.TxSlot{}
+		slot := txpool.TxnSlot{}
 
 		if _, err := ctx.ParseTransaction(v, 0, &slot, sender[:], false /* hasEnvelope */, false /* wrappedWithBlobs */, nil); err != nil {
 			return valueBuf, err
@@ -604,7 +604,7 @@ func DumpTxs(ctx context.Context, db kv.RoDB, chainConfig *chain.Config, blockFr
 		return valueBuf, nil
 	}
 
-	addSystemTx := func(ctx *txpool.TxParseContext, tx kv.Tx, txId types.BaseTxnID) error {
+	addSystemTx := func(ctx *txpool.TxnParseContext, tx kv.Tx, txId types.BaseTxnID) error {
 		binary.BigEndian.PutUint64(numBuf, txId.U64())
 		tv, err := tx.GetOne(kv.EthTx, numBuf)
 		if err != nil {
@@ -684,13 +684,13 @@ func DumpTxs(ctx context.Context, db kv.RoDB, chainConfig *chain.Config, blockFr
 		parsers.SetLimit(workers)
 
 		valueBufs := make([][]byte, workers)
-		parseCtxs := make([]*txpool.TxParseContext, workers)
+		parseCtxs := make([]*txpool.TxnParseContext, workers)
 
 		for i := 0; i < workers; i++ {
 			valueBuf := bufPool.Get().(*[16 * 4096]byte)
 			defer bufPool.Put(valueBuf)
 			valueBufs[i] = valueBuf[:]
-			parseCtxs[i] = txpool.NewTxParseContext(*chainID)
+			parseCtxs[i] = txpool.NewTxnParseContext(*chainID)
 		}
 
 		if err := addSystemTx(parseCtxs[0], tx, body.BaseTxnID); err != nil {
@@ -901,12 +901,12 @@ func ForEachHeader(ctx context.Context, s *RoSnapshots, walker func(header *type
 	for _, sn := range view.Headers() {
 		if err := sn.Src().WithReadAhead(func() error {
 			g := sn.Src().MakeGetter()
-			for g.HasNext() {
+			for i := 0; g.HasNext(); i++ {
 				word, _ = g.Next(word[:0])
 				var header types.Header
 				r.Reset(word[1:])
 				if err := rlp.Decode(r, &header); err != nil {
-					return err
+					return fmt.Errorf("%w, file=%s, record=%d", err, sn.Src().FileName(), i)
 				}
 				if err := walker(&header); err != nil {
 					return err

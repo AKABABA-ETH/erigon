@@ -34,12 +34,12 @@ import (
 	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon/txnprovider/txpool"
 
+	"github.com/erigontech/erigon-lib/rlp"
 	"github.com/erigontech/erigon/core"
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/ethdb/prune"
 	"github.com/erigontech/erigon/params"
 	"github.com/erigontech/erigon/polygon/bor/borcfg"
-	"github.com/erigontech/erigon/rlp"
 	"github.com/erigontech/erigon/turbo/snapshotsync/freezeblocks"
 	"github.com/erigontech/erigon/turbo/stages/mock"
 )
@@ -122,8 +122,8 @@ func TestDump(t *testing.T) {
 		chainID, _ := uint256.FromBig(m.ChainConfig.ChainID)
 		t.Run("txs", func(t *testing.T) {
 			require := require.New(t)
-			slot := txpool.TxSlot{}
-			parseCtx := txpool.NewTxParseContext(*chainID)
+			slot := txpool.TxnSlot{}
+			parseCtx := txpool.NewTxnParseContext(*chainID)
 			parseCtx.WithSender(false)
 			var sender [20]byte
 
@@ -147,8 +147,8 @@ func TestDump(t *testing.T) {
 		})
 		t.Run("txs_not_from_zero", func(t *testing.T) {
 			require := require.New(t)
-			slot := txpool.TxSlot{}
-			parseCtx := txpool.NewTxParseContext(*chainID)
+			slot := txpool.TxnSlot{}
+			parseCtx := txpool.NewTxnParseContext(*chainID)
 			parseCtx.WithSender(false)
 			var sender [20]byte
 

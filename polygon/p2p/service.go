@@ -24,12 +24,12 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	libcommon "github.com/erigontech/erigon-lib/common"
+	"github.com/erigontech/erigon-lib/event"
 	"github.com/erigontech/erigon-lib/gointerfaces/sentryproto"
 	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon-lib/p2p/sentry"
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/eth/protocols/eth"
-	"github.com/erigontech/erigon/polygon/polygoncommon"
 )
 
 func NewService(logger log.Logger, maxPeers int, sc sentryproto.SentryClient, sdf sentry.StatusDataFactory) *Service {
@@ -43,6 +43,7 @@ func NewService(logger log.Logger, maxPeers int, sc sentryproto.SentryClient, sd
 	fetcher = NewTrackingFetcher(fetcher, peerTracker)
 	publisher := NewPublisher(logger, messageSender, peerTracker)
 	return &Service{
+		logger:          logger,
 		fetcher:         fetcher,
 		messageListener: messageListener,
 		peerPenalizer:   peerPenalizer,
@@ -53,6 +54,7 @@ func NewService(logger log.Logger, maxPeers int, sc sentryproto.SentryClient, sd
 }
 
 type Service struct {
+	logger          log.Logger
 	fetcher         Fetcher
 	messageListener *MessageListener
 	peerPenalizer   *PeerPenalizer
@@ -62,6 +64,8 @@ type Service struct {
 }
 
 func (s *Service) Run(ctx context.Context) error {
+	s.logger.Info("[p2p] running p2p service component")
+
 	eg, ctx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
 		if err := s.messageListener.Run(ctx); err != nil {
@@ -120,10 +124,10 @@ func (s *Service) Penalize(ctx context.Context, peerId *PeerId) error {
 	return s.peerPenalizer.Penalize(ctx, peerId)
 }
 
-func (s *Service) RegisterNewBlockObserver(o polygoncommon.Observer[*DecodedInboundMessage[*eth.NewBlockPacket]]) polygoncommon.UnregisterFunc {
+func (s *Service) RegisterNewBlockObserver(o event.Observer[*DecodedInboundMessage[*eth.NewBlockPacket]]) event.UnregisterFunc {
 	return s.messageListener.RegisterNewBlockObserver(o)
 }
 
-func (s *Service) RegisterNewBlockHashesObserver(o polygoncommon.Observer[*DecodedInboundMessage[*eth.NewBlockHashesPacket]]) polygoncommon.UnregisterFunc {
+func (s *Service) RegisterNewBlockHashesObserver(o event.Observer[*DecodedInboundMessage[*eth.NewBlockHashesPacket]]) event.UnregisterFunc {
 	return s.messageListener.RegisterNewBlockHashesObserver(o)
 }

@@ -22,25 +22,26 @@ import (
 	"fmt"
 	"time"
 
+	libcommon "github.com/erigontech/erigon-lib/common"
 	commonerrors "github.com/erigontech/erigon-lib/common/errors"
 	"github.com/erigontech/erigon-lib/common/generics"
+	"github.com/erigontech/erigon-lib/event"
 	"github.com/erigontech/erigon-lib/log/v3"
-
-	libcommon "github.com/erigontech/erigon-lib/common"
-	"github.com/erigontech/erigon/polygon/polygoncommon"
 )
 
 type Scraper[TEntity Entity] struct {
+	name            string
 	store           EntityStore[TEntity]
 	fetcher         entityFetcher[TEntity]
 	pollDelay       time.Duration
-	observers       *polygoncommon.Observers[[]TEntity]
-	syncEvent       *polygoncommon.EventNotifier
+	observers       *event.Observers[[]TEntity]
+	syncEvent       *event.Notifier
 	transientErrors []error
 	logger          log.Logger
 }
 
 func NewScraper[TEntity Entity](
+	name string,
 	store EntityStore[TEntity],
 	fetcher entityFetcher[TEntity],
 	pollDelay time.Duration,
@@ -48,21 +49,27 @@ func NewScraper[TEntity Entity](
 	logger log.Logger,
 ) *Scraper[TEntity] {
 	return &Scraper[TEntity]{
+		name:            name,
 		store:           store,
 		fetcher:         fetcher,
 		pollDelay:       pollDelay,
-		observers:       polygoncommon.NewObservers[[]TEntity](),
-		syncEvent:       polygoncommon.NewEventNotifier(),
+		observers:       event.NewObservers[[]TEntity](),
+		syncEvent:       event.NewNotifier(),
 		transientErrors: transientErrors,
 		logger:          logger,
 	}
 }
 
 func (s *Scraper[TEntity]) Run(ctx context.Context) error {
+	s.logger.Info(heimdallLogPrefix("running scraper component"), "name", s.name)
+
 	defer s.store.Close()
 	if err := s.store.Prepare(ctx); err != nil {
 		return err
 	}
+
+	progressLogTicker := time.NewTicker(30 * time.Second)
+	defer progressLogTicker.Stop()
 
 	for ctx.Err() == nil {
 		lastKnownId, hasLastKnownId, err := s.store.LastEntityId(ctx)
@@ -116,12 +123,29 @@ func (s *Scraper[TEntity]) Run(ctx context.Context) error {
 			}
 
 			s.observers.NotifySync(entities) // NotifySync preserves order of events
+
+			select {
+			case <-progressLogTicker.C:
+				if len(entities) > 0 {
+					s.logger.Info(
+						heimdallLogPrefix("scraper periodic progress"),
+						"name", s.name,
+						"rangeStart", idRange.Start,
+						"rangeEnd", idRange.End,
+						"priorLastKnownId", lastKnownId,
+						"newLast", entities[len(entities)-1].RawId(),
+					)
+				}
+			default:
+				// carry on
+			}
 		}
 	}
+
 	return ctx.Err()
 }
 
-func (s *Scraper[TEntity]) RegisterObserver(observer func([]TEntity)) polygoncommon.UnregisterFunc {
+func (s *Scraper[TEntity]) RegisterObserver(observer func([]TEntity)) event.UnregisterFunc {
 	return s.observers.Register(observer)
 }
 

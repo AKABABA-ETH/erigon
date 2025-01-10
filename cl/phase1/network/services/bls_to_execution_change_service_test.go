@@ -56,7 +56,7 @@ func (t *blsToExecutionChangeTestSuite) SetupTest() {
 		BLSToExecutionChangesPool: pool.NewOperationPool[common.Bytes96, *cltypes.SignedBLSToExecutionChange](10, "blsToExecutionChangesPool"),
 	}
 	_, st, _ := tests.GetCapellaRandom()
-	t.syncedData = synced_data.NewSyncedDataManager(&clparams.MainnetBeaconConfig, true, 0)
+	t.syncedData = synced_data.NewSyncedDataManager(&clparams.MainnetBeaconConfig, true)
 	t.syncedData.OnHeadState(st)
 	t.emitters = beaconevents.NewEventEmitter()
 	t.beaconCfg = &clparams.BeaconChainConfig{}
@@ -78,7 +78,7 @@ func (t *blsToExecutionChangeTestSuite) TearDownTest() {
 }
 
 func (t *blsToExecutionChangeTestSuite) TestProcessMessage() {
-	mockMsg := &cltypes.SignedBLSToExecutionChangeWithGossipData{
+	mockMsg := &SignedBLSToExecutionChangeForGossip{
 		SignedBLSToExecutionChange: &cltypes.SignedBLSToExecutionChange{
 			Message: &cltypes.BLSToExecutionChange{
 				ValidatorIndex: 1,
@@ -87,14 +87,13 @@ func (t *blsToExecutionChangeTestSuite) TestProcessMessage() {
 			},
 			Signature: [96]byte{1, 2, 3},
 		},
-		GossipData:            nil,
 		ImmediateVerification: true,
 	}
 
 	tests := []struct {
 		name        string
 		mock        func()
-		msg         *cltypes.SignedBLSToExecutionChangeWithGossipData
+		msg         *SignedBLSToExecutionChangeForGossip
 		wantErr     bool
 		specificErr error
 	}{

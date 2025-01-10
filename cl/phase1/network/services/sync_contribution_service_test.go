@@ -35,7 +35,7 @@ import (
 
 func setupSyncContributionServiceTest(t *testing.T, ctrl *gomock.Controller) (SyncContributionService, *synced_data.SyncedDataManager, *eth_clock.MockEthereumClock) {
 	cfg := &clparams.MainnetBeaconConfig
-	syncedDataManager := synced_data.NewSyncedDataManager(cfg, true, 0)
+	syncedDataManager := synced_data.NewSyncedDataManager(cfg, true)
 	ethClock := eth_clock.NewMockEthereumClock(ctrl)
 	syncContributionPool := syncpoolmock.NewMockSyncContributionPool(ctrl)
 	batchSignatureVerifier := NewBatchSignatureVerifier(context.TODO(), nil)
@@ -45,12 +45,12 @@ func setupSyncContributionServiceTest(t *testing.T, ctrl *gomock.Controller) (Sy
 	return s, syncedDataManager, ethClock
 }
 
-func getObjectsForSyncContributionServiceTest(t *testing.T, ctrl *gomock.Controller) (*state.CachingBeaconState, *cltypes.SignedContributionAndProofWithGossipData) {
+func getObjectsForSyncContributionServiceTest(t *testing.T, ctrl *gomock.Controller) (*state.CachingBeaconState, *SignedContributionAndProofForGossip) {
 	_, _, state := tests.GetBellatrixRandom()
 	br, _ := state.BlockRoot()
 	aggBits := make([]byte, 16)
 	aggBits[0] = 1
-	msg := &cltypes.SignedContributionAndProofWithGossipData{
+	msg := &SignedContributionAndProofForGossip{
 		SignedContributionAndProof: &cltypes.SignedContributionAndProof{
 			Message: &cltypes.ContributionAndProof{
 				AggregatorIndex: 0,
@@ -62,7 +62,6 @@ func getObjectsForSyncContributionServiceTest(t *testing.T, ctrl *gomock.Control
 				},
 			},
 		},
-		GossipData:            nil,
 		ImmediateVerification: true,
 	}
 

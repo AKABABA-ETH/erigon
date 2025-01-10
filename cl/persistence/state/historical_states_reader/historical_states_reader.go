@@ -23,16 +23,19 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/kv"
 	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon/cl/beacon/synced_data"
 	"github.com/erigontech/erigon/cl/clparams"
 	"github.com/erigontech/erigon/cl/cltypes"
 	"github.com/erigontech/erigon/cl/cltypes/solid"
 	"github.com/erigontech/erigon/cl/persistence/base_encoding"
 	state_accessors "github.com/erigontech/erigon/cl/persistence/state"
 	"github.com/erigontech/erigon/cl/phase1/core/state"
+	"github.com/erigontech/erigon/cl/phase1/core/state/lru"
 	"github.com/erigontech/erigon/turbo/snapshotsync"
 	"github.com/erigontech/erigon/turbo/snapshotsync/freezeblocks"
 	"github.com/klauspost/compress/zstd"
@@ -48,20 +51,27 @@ type HistoricalStatesReader struct {
 	blockReader    freezeblocks.BeaconSnapshotReader
 	stateSn        *snapshotsync.CaplinStateSnapshots
 	genesisState   *state.CachingBeaconState
+	syncedData     synced_data.SyncedData
+
+	shuffledIndiciesCache *lru.CacheWithTTL[uint64, []uint64]
 }
 
 func NewHistoricalStatesReader(
 	cfg *clparams.BeaconChainConfig,
 	blockReader freezeblocks.BeaconSnapshotReader,
 	validatorTable *state_accessors.StaticValidatorTable,
-	genesisState *state.CachingBeaconState, stateSn *snapshotsync.CaplinStateSnapshots) *HistoricalStatesReader {
+	genesisState *state.CachingBeaconState, stateSn *snapshotsync.CaplinStateSnapshots,
+	syncedData synced_data.SyncedData) *HistoricalStatesReader {
+	shuffledIndiciesCache := lru.NewWithTTL[uint64, []uint64]("shuffledIndiciesCacheReader", 64, 2*time.Minute)
 
 	return &HistoricalStatesReader{
-		cfg:            cfg,
-		blockReader:    blockReader,
-		genesisState:   genesisState,
-		validatorTable: validatorTable,
-		stateSn:        stateSn,
+		cfg:                   cfg,
+		blockReader:           blockReader,
+		genesisState:          genesisState,
+		validatorTable:        validatorTable,
+		stateSn:               stateSn,
+		shuffledIndiciesCache: shuffledIndiciesCache,
+		syncedData:            syncedData,
 	}
 }
 
@@ -104,7 +114,7 @@ func (r *HistoricalStatesReader) ReadHistoricalState(ctx context.Context, tx kv.
 	blockHeader := block.SignedBeaconBlockHeader().Header
 	blockHeader.Root = common.Hash{}
 	// Read the epoch and per-slot data.
-	slotData, err := state_accessors.ReadSlotData(kvGetter, slot)
+	slotData, err := state_accessors.ReadSlotData(kvGetter, slot, r.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -144,12 +154,14 @@ func (r *HistoricalStatesReader) ReadHistoricalState(ctx context.Context, tx kv.
 	ret.SetStateRoots(stateRoots)
 
 	historicalRoots := solid.NewHashList(int(r.cfg.HistoricalRootsLimit))
-	if err := state_accessors.ReadHistoricalRoots(tx, epochData.HistoricalRootsLength, func(idx int, root common.Hash) error {
-		historicalRoots.Append(root)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("failed to read historical roots: %w", err)
+	for i := 0; i < int(epochData.HistoricalRootsLength); i++ {
+		historicalRoot, err := r.syncedData.HistoricalRootElementAtIndex(i)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read historical root at index %d: %w", i, err)
+		}
+		historicalRoots.Append(historicalRoot)
 	}
+
 	ret.SetHistoricalRoots(historicalRoots)
 
 	// Eth1
@@ -271,11 +283,13 @@ func (r *HistoricalStatesReader) ReadHistoricalState(ctx context.Context, tx kv.
 	ret.SetNextWithdrawalValidatorIndex(slotData.NextWithdrawalValidatorIndex)
 	// Deep history valid from Capella onwards
 	historicalSummaries := solid.NewStaticListSSZ[*cltypes.HistoricalSummary](int(r.cfg.HistoricalRootsLimit), 64)
-	if err := state_accessors.ReadHistoricalSummaries(tx, epochData.HistoricalSummariesLength, func(idx int, historicalSummary *cltypes.HistoricalSummary) error {
+
+	for i := 0; i < int(epochData.HistoricalSummariesLength); i++ {
+		historicalSummary, err := r.syncedData.HistoricalSummaryElementAtIndex(i)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read historical summary at index %d: %w", i, err)
+		}
 		historicalSummaries.Append(historicalSummary)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("failed to read historical summaries: %w", err)
 	}
 	ret.SetHistoricalSummaries(historicalSummaries)
 	return ret, nil
@@ -442,7 +456,6 @@ func (r *HistoricalStatesReader) reconstructDiffedUint64List(tx kv.Tx, kvGetter 
 		return nil, err
 	}
 	forward := remainder <= midpoint || currentStageProgress <= freshDumpSlot+clparams.SlotsPerDump
-	fmt.Println("forward", forward)
 	if forward {
 		compressed, err = kvGetter(dumpBucket, base_encoding.Encode64ToBytes4(freshDumpSlot))
 		if err != nil {
@@ -660,7 +673,7 @@ func (r *HistoricalStatesReader) ReconstructUint64ListDump(kvGetter state_access
 
 func (r *HistoricalStatesReader) ReadValidatorsForHistoricalState(tx kv.Tx, kvGetter state_accessors.GetValFn, slot uint64) (*solid.ValidatorSet, error) {
 	// Read the minimal beacon state which have the small fields.
-	sd, err := state_accessors.ReadSlotData(kvGetter, slot)
+	sd, err := state_accessors.ReadSlotData(kvGetter, slot, r.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -736,9 +749,6 @@ func (r *HistoricalStatesReader) readPendingEpochs(tx kv.Tx, slot uint64) (*soli
 			}
 			return true
 		})
-		if err != nil {
-			return nil, nil, err
-		}
 	}
 	return currentEpochAttestations, previousEpochAttestations, nil
 }
@@ -764,7 +774,7 @@ func (r *HistoricalStatesReader) ReadParticipations(tx kv.Tx, kvGetter state_acc
 	}
 
 	// Read the minimal beacon state which have the small fields.
-	sd, err := state_accessors.ReadSlotData(kvGetter, slot)
+	sd, err := state_accessors.ReadSlotData(kvGetter, slot, r.cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -776,9 +786,6 @@ func (r *HistoricalStatesReader) ReadParticipations(tx kv.Tx, kvGetter state_acc
 
 	currentIdxs := solid.NewParticipationBitList(int(validatorLength), int(r.cfg.ValidatorRegistryLimit))
 	previousIdxs := solid.NewParticipationBitList(int(validatorLength), int(r.cfg.ValidatorRegistryLimit))
-	if err != nil {
-		return nil, nil, err
-	}
 
 	// Read the previous idxs
 	for i := beginSlot; i <= slot; i++ {
@@ -851,9 +858,6 @@ func (r *HistoricalStatesReader) ReadParticipations(tx kv.Tx, kvGetter state_acc
 			}
 			return true
 		})
-		if err != nil {
-			return nil, nil, err
-		}
 	}
 	return currentIdxs, previousIdxs, nil
 }
@@ -887,7 +891,7 @@ func (r *HistoricalStatesReader) tryCachingEpochsInParallell(tx kv.Tx, kvGetter 
 }
 
 func (r *HistoricalStatesReader) ReadValidatorsBalances(tx kv.Tx, kvGetter state_accessors.GetValFn, slot uint64) (solid.Uint64ListSSZ, error) {
-	sd, err := state_accessors.ReadSlotData(kvGetter, slot)
+	sd, err := state_accessors.ReadSlotData(kvGetter, slot, r.cfg)
 	if err != nil {
 		return nil, err
 	}

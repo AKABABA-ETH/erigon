@@ -33,7 +33,7 @@ import (
 
 func setupSyncCommitteesServiceTest(t *testing.T, ctrl *gomock.Controller) (SyncCommitteeMessagesService, *synced_data.SyncedDataManager, *eth_clock.MockEthereumClock) {
 	cfg := &clparams.MainnetBeaconConfig
-	syncedDataManager := synced_data.NewSyncedDataManager(cfg, true, 0)
+	syncedDataManager := synced_data.NewSyncedDataManager(cfg, true)
 	ethClock := eth_clock.NewMockEthereumClock(ctrl)
 	syncContributionPool := syncpoolmock.NewMockSyncContributionPool(ctrl)
 	batchSignatureVerifier := NewBatchSignatureVerifier(context.TODO(), nil)
@@ -43,16 +43,15 @@ func setupSyncCommitteesServiceTest(t *testing.T, ctrl *gomock.Controller) (Sync
 	return s, syncedDataManager, ethClock
 }
 
-func getObjectsForSyncCommitteesServiceTest(t *testing.T, ctrl *gomock.Controller) (*state.CachingBeaconState, *cltypes.SyncCommitteeMessageWithGossipData) {
+func getObjectsForSyncCommitteesServiceTest(t *testing.T, ctrl *gomock.Controller) (*state.CachingBeaconState, *SyncCommitteeMessageForGossip) {
 	_, _, state := tests.GetBellatrixRandom()
 	br, _ := state.BlockRoot()
-	msg := &cltypes.SyncCommitteeMessageWithGossipData{
+	msg := &SyncCommitteeMessageForGossip{
 		SyncCommitteeMessage: &cltypes.SyncCommitteeMessage{
 			Slot:            state.Slot(),
 			BeaconBlockRoot: br,
 			ValidatorIndex:  0,
 		},
-		GossipData:            nil,
 		ImmediateVerification: true,
 	}
 	return state, msg

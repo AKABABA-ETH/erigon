@@ -270,7 +270,7 @@ func (s *KvServer) Tx(stream remote.KV_TxServer) error {
 			if err := s.with(id, func(tx kv.Tx) error {
 				for _, c := range cursors { // restore all cursors position
 					var err error
-					c.c, err = tx.Cursor(c.bucket)
+					c.c, err = tx.Cursor(c.bucket) //nolint:gocritic
 					if err != nil {
 						return err
 					}
@@ -311,7 +311,7 @@ func (s *KvServer) Tx(stream remote.KV_TxServer) error {
 			CursorID++
 			var err error
 			if err := s.with(id, func(tx kv.Tx) error {
-				c, err = tx.Cursor(in.BucketName)
+				c, err = tx.Cursor(in.BucketName) //nolint:gocritic
 				if err != nil {
 					return err
 				}
@@ -331,7 +331,7 @@ func (s *KvServer) Tx(stream remote.KV_TxServer) error {
 			CursorID++
 			var err error
 			if err := s.with(id, func(tx kv.Tx) error {
-				c, err = tx.CursorDupSort(in.BucketName)
+				c, err = tx.CursorDupSort(in.BucketName) //nolint:gocritic
 				if err != nil {
 					return err
 				}
@@ -526,7 +526,7 @@ func (s *StateChangePubSub) remove(id uint) {
 // Temporal methods
 //
 
-func (s *KvServer) DomainGet(_ context.Context, req *remote.GetLatestReq) (reply *remote.GetLatestReply, err error) {
+func (s *KvServer) GetLatest(_ context.Context, req *remote.GetLatestReq) (reply *remote.GetLatestReply, err error) {
 	domainName, err := kv.String2Domain(req.Table)
 	if err != nil {
 		return nil, err
@@ -538,12 +538,12 @@ func (s *KvServer) DomainGet(_ context.Context, req *remote.GetLatestReq) (reply
 			return errors.New("server DB doesn't implement kv.Temporal interface")
 		}
 		if req.Latest {
-			reply.V, _, err = ttx.GetLatest(domainName, req.K, req.K2)
+			reply.V, _, err = ttx.GetLatest(domainName, req.K)
 			if err != nil {
 				return err
 			}
 		} else {
-			reply.V, reply.Ok, err = ttx.GetAsOf(domainName, req.K, req.K2, req.Ts)
+			reply.V, reply.Ok, err = ttx.GetAsOf(domainName, req.K, req.Ts)
 			if err != nil {
 				return err
 			}
@@ -659,7 +659,7 @@ func (s *KvServer) HistoryRange(_ context.Context, req *remote.HistoryRangeReq) 
 	return reply, nil
 }
 
-func (s *KvServer) DomainRange(_ context.Context, req *remote.RangeAsOfReq) (*remote.Pairs, error) {
+func (s *KvServer) RangeAsOf(_ context.Context, req *remote.RangeAsOfReq) (*remote.Pairs, error) {
 	domainName, err := kv.String2Domain(req.Table)
 	if err != nil {
 		return nil, err

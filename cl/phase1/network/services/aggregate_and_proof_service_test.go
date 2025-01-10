@@ -35,11 +35,11 @@ import (
 	"github.com/erigontech/erigon/cl/pool"
 )
 
-func getAggregateAndProofAndState(t *testing.T) (*cltypes.SignedAggregateAndProofData, *state.CachingBeaconState) {
+func getAggregateAndProofAndState(t *testing.T) (*SignedAggregateAndProofForGossip, *state.CachingBeaconState) {
 	_, _, s := tests.GetBellatrixRandom()
 	br, _ := s.BlockRoot()
 	checkpoint := s.CurrentJustifiedCheckpoint()
-	a := &cltypes.SignedAggregateAndProofData{
+	a := &SignedAggregateAndProofForGossip{
 		SignedAggregateAndProof: &cltypes.SignedAggregateAndProof{
 			Message: &cltypes.AggregateAndProof{
 				AggregatorIndex: 141,
@@ -62,7 +62,6 @@ func getAggregateAndProofAndState(t *testing.T) (*cltypes.SignedAggregateAndProo
 				},
 			},
 		},
-		GossipData: nil,
 	}
 
 	a.SignedAggregateAndProof.Message.Aggregate.Data.Target.Epoch = s.Slot() / 32
@@ -74,7 +73,7 @@ func setupAggregateAndProofTest(t *testing.T) (AggregateAndProofService, *synced
 	ctx, cn := context.WithCancel(context.Background())
 	cn()
 	cfg := &clparams.MainnetBeaconConfig
-	syncedDataManager := synced_data.NewSyncedDataManager(cfg, true, 0)
+	syncedDataManager := synced_data.NewSyncedDataManager(cfg, true)
 	forkchoiceMock := mock_services.NewForkChoiceStorageMock(t)
 	p := pool.OperationsPool{}
 	p.AttestationsPool = pool.NewOperationPool[libcommon.Bytes96, *solid.Attestation](100, "test")
