@@ -237,7 +237,7 @@ func (sdb *IntraBlockState) Exist(addr libcommon.Address) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return s != nil && !s.deleted, err
+	return s != nil && !s.deleted, nil
 }
 
 // Empty returns whether the state object is either non-existent
@@ -360,24 +360,6 @@ func (sdb *IntraBlockState) ResolveCode(addr libcommon.Address) ([]byte, error) 
 	return sdb.GetCode(addr)
 }
 
-func (sdb *IntraBlockState) ResolveCodeSize(addr libcommon.Address) (int, error) {
-	// eip-7702
-	size, err := sdb.GetCodeSize(addr)
-	if err != nil {
-		return 0, err
-	}
-	if size == types.DelegateDesignationCodeSize {
-		// might be delegated designation
-		code, err := sdb.ResolveCode(addr)
-		if err != nil {
-			return 0, err
-		}
-		return len(code), nil
-	}
-
-	return size, nil
-}
-
 func (sdb *IntraBlockState) GetDelegatedDesignation(addr libcommon.Address) (libcommon.Address, bool, error) {
 	// eip-7702
 	code, err := sdb.GetCode(addr)
@@ -465,7 +447,7 @@ func (sdb *IntraBlockState) AddBalance(addr libcommon.Address, amount *uint256.I
 			sdb.balanceInc[addr] = bi
 		}
 
-		if sdb.tracingHooks != nil && sdb.tracingHooks.OnBalanceChange != nil {
+		if !amount.IsZero() && sdb.tracingHooks != nil && sdb.tracingHooks.OnBalanceChange != nil {
 			// TODO: discuss if we should ignore error
 			prev := new(uint256.Int)
 			account, _ := sdb.stateReader.ReadAccountDataForDebug(addr)

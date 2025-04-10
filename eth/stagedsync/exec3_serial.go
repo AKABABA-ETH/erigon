@@ -40,7 +40,7 @@ func (se *serialExecutor) execute(ctx context.Context, tasks []*state.TxTask) (c
 			return false, nil
 		}
 
-		se.applyWorker.RunTxTaskNoLock(txTask, se.isMining)
+		se.applyWorker.RunTxTaskNoLock(txTask, se.isMining, se.skipPostEvaluation)
 		if err := func() error {
 			if errors.Is(txTask.Error, context.Canceled) {
 				return txTask.Error
@@ -58,10 +58,8 @@ func (se *serialExecutor) execute(ctx context.Context, tasks []*state.TxTask) (c
 				se.blobGasUsed += txTask.Tx.GetBlobGas()
 			}
 
-			txTask.CreateReceipt(se.applyTx)
-
 			if txTask.Final {
-				if !se.isMining && !se.inMemExec && !se.skipPostEvaluation && !se.execStage.CurrentSyncCycle.IsInitialCycle {
+				if !se.isMining && !se.skipPostEvaluation && !se.execStage.CurrentSyncCycle.IsInitialCycle {
 					// note this assumes the bloach reciepts is a fixed array shared by
 					// all tasks - if that changes this will need to change - robably need to
 					// add this to the executor
@@ -69,7 +67,7 @@ func (se *serialExecutor) execute(ctx context.Context, tasks []*state.TxTask) (c
 				}
 				checkReceipts := !se.cfg.vmConfig.StatelessExec && se.cfg.chainConfig.IsByzantium(txTask.BlockNum) && !se.cfg.vmConfig.NoReceipts && !se.isMining
 				if txTask.BlockNum > 0 && !se.skipPostEvaluation { //Disable check for genesis. Maybe need somehow improve it in future - to satisfy TestExecutionSpec
-					if err := core.BlockPostValidation(se.usedGas, se.blobGasUsed, checkReceipts, txTask.BlockReceipts, txTask.Header, se.isMining); err != nil {
+					if err := core.BlockPostValidation(se.usedGas, se.blobGasUsed, checkReceipts, txTask.BlockReceipts, txTask.Header, se.isMining, txTask.Txs, se.cfg.chainConfig, se.logger); err != nil {
 						return fmt.Errorf("%w, txnIdx=%d, %v", consensus.ErrInvalidBlock, txTask.TxIndex, err) //same as in stage_exec.go
 					}
 				}
@@ -114,16 +112,34 @@ func (se *serialExecutor) execute(ctx context.Context, tasks []*state.TxTask) (c
 
 		if !txTask.Final {
 			var receipt *types.Receipt
-			if txTask.TxIndex >= 0 && !txTask.Final {
+			if txTask.TxIndex >= 0 {
 				receipt = txTask.BlockReceipts[txTask.TxIndex]
 			}
 			if err := rawtemporaldb.AppendReceipt(se.doms, receipt, se.blobGasUsed); err != nil {
 				return false, err
 			}
+		} else {
+			if se.cfg.chainConfig.Bor != nil && txTask.TxIndex >= 1 {
+				// get last receipt and store the last log index + 1
+				lastReceipt := txTask.BlockReceipts[txTask.TxIndex-1]
+				if lastReceipt == nil {
+					return false, fmt.Errorf("receipt is nil but should be populated, txIndex=%d, block=%d", txTask.TxIndex-1, txTask.BlockNum)
+				}
+				if len(lastReceipt.Logs) > 0 {
+					firstIndex := lastReceipt.Logs[len(lastReceipt.Logs)-1].Index + 1
+					receipt := types.Receipt{
+						CumulativeGasUsed:        lastReceipt.CumulativeGasUsed,
+						FirstLogIndexWithinBlock: uint32(firstIndex),
+					}
+					if err := rawtemporaldb.AppendReceipt(se.doms, &receipt, se.blobGasUsed); err != nil {
+						return false, err
+					}
+				}
+			}
 		}
 
 		// MA applystate
-		if err := se.rs.ApplyState4(ctx, txTask); err != nil {
+		if err := se.rs.ApplyState(ctx, txTask); err != nil {
 			return false, err
 		}
 
@@ -160,7 +176,7 @@ func (se *serialExecutor) commit(ctx context.Context, txNum uint64, blockNum uin
 		return t2, err
 	}
 	se.doms.SetTxNum(txNum)
-	se.rs = state.NewStateV3(se.doms, se.logger)
+	se.rs = state.NewParallelExecutionState(se.doms, se.logger)
 
 	se.applyWorker.ResetTx(se.applyTx)
 	se.applyWorker.ResetState(se.rs, se.accumulator)

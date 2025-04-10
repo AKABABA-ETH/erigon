@@ -29,11 +29,10 @@ import (
 
 	"github.com/erigontech/erigon-lib/chain"
 	"github.com/erigontech/erigon-lib/common"
-	"github.com/erigontech/erigon-lib/common/hexutility"
+	"github.com/erigontech/erigon-lib/common/hexutil"
 	"github.com/erigontech/erigon-lib/common/math"
 	"github.com/erigontech/erigon-lib/crypto"
 	"github.com/erigontech/erigon-lib/kv"
-	"github.com/erigontech/erigon-lib/kv/bitmapdb"
 	"github.com/erigontech/erigon-lib/log/v3"
 
 	"github.com/erigontech/erigon/core"
@@ -49,7 +48,7 @@ import (
 
 type OverlayAPI interface {
 	GetLogs(ctx context.Context, crit filters.FilterCriteria, stateOverride *ethapi.StateOverrides) ([]*types.Log, error)
-	CallConstructor(ctx context.Context, address common.Address, code *hexutility.Bytes) (*CreationCode, error)
+	CallConstructor(ctx context.Context, address common.Address, code *hexutil.Bytes) (*CreationCode, error)
 }
 
 // OverlayAPIImpl is implementation of the OverlayAPIImpl interface based on remote Db access
@@ -63,7 +62,7 @@ type OverlayAPIImpl struct {
 }
 
 type CreationCode struct {
-	Code *hexutility.Bytes `json:"code"`
+	Code *hexutil.Bytes `json:"code"`
 }
 
 type blockReplayTask struct {
@@ -89,7 +88,7 @@ func NewOverlayAPI(base *BaseAPI, db kv.TemporalRoDB, gascap uint64, overlayGetL
 	}
 }
 
-func (api *OverlayAPIImpl) CallConstructor(ctx context.Context, address common.Address, code *hexutility.Bytes) (*CreationCode, error) {
+func (api *OverlayAPIImpl) CallConstructor(ctx context.Context, address common.Address, code *hexutil.Bytes) (*CreationCode, error) {
 	var (
 		replayTransactions types.Transactions
 		evm                *vm.EVM
@@ -177,7 +176,7 @@ func (api *OverlayAPIImpl) CallConstructor(ctx context.Context, address common.A
 	blockCtx = core.NewEVMBlockContext(header, getHash, api.engine(), nil, chainConfig)
 
 	// Get a new instance of the EVM
-	evm = vm.NewEVM(blockCtx, txCtx, statedb, chainConfig, vm.Config{Debug: false})
+	evm = vm.NewEVM(blockCtx, txCtx, statedb, chainConfig, vm.Config{})
 	signer := types.MakeSigner(chainConfig, blockNum, block.Time())
 	rules := chainConfig.Rules(blockNum, blockCtx.Time)
 
@@ -191,9 +190,9 @@ func (api *OverlayAPIImpl) CallConstructor(ctx context.Context, address common.A
 			return nil, err
 		}
 		txCtx = core.NewEVMTxContext(msg)
-		evm = vm.NewEVM(blockCtx, txCtx, evm.IntraBlockState(), chainConfig, vm.Config{Debug: false})
+		evm = vm.NewEVM(blockCtx, txCtx, evm.IntraBlockState(), chainConfig, vm.Config{})
 		// Execute the transaction message
-		_, err = core.ApplyMessage(evm, msg, gp, true /* refunds */, false /* gasBailout */)
+		_, err = core.ApplyMessage(evm, msg, gp, true /* refunds */, false /* gasBailout */, api.engine())
 		if err != nil {
 			return nil, err
 		}
@@ -213,23 +212,23 @@ func (api *OverlayAPIImpl) CallConstructor(ctx context.Context, address common.A
 	contractAddr := crypto.CreateAddress(msg.From(), msg.Nonce())
 	if creationTx.GetTo() == nil && contractAddr == address {
 		// CREATE: adapt message with new code so it's replaced instantly
-		msg = types.NewMessage(msg.From(), msg.To(), msg.Nonce(), msg.Value(), api.GasCap, msg.GasPrice(), msg.FeeCap(), msg.Tip(), *code, msg.AccessList(), msg.CheckNonce(), msg.IsFree(), msg.MaxFeePerBlobGas())
+		msg = types.NewMessage(msg.From(), msg.To(), msg.Nonce(), msg.Value(), api.GasCap, msg.GasPrice(), msg.FeeCap(), msg.TipCap(), *code, msg.AccessList(), msg.CheckNonce(), msg.IsFree(), msg.MaxFeePerBlobGas())
 	} else {
 		msg.ChangeGas(api.GasCap, api.GasCap)
 	}
 	txCtx = core.NewEVMTxContext(msg)
 	ct := OverlayCreateTracer{contractAddress: address, code: *code, gasCap: api.GasCap}
-	evm = vm.NewEVM(blockCtx, txCtx, evm.IntraBlockState(), chainConfig, vm.Config{Debug: true, Tracer: &ct})
+	evm = vm.NewEVM(blockCtx, txCtx, evm.IntraBlockState(), chainConfig, vm.Config{Tracer: ct.Tracer().Hooks})
 
 	// Execute the transaction message
-	_, err = core.ApplyMessage(evm, msg, gp, true /* refunds */, true /* gasBailout */)
+	_, err = core.ApplyMessage(evm, msg, gp, true /* refunds */, true /* gasBailout */, api.engine())
 	if ct.err != nil {
 		return nil, err
 	}
 
 	resultCode := &CreationCode{}
 	if ct.resultCode != nil && len(ct.resultCode) > 0 {
-		c := hexutility.Bytes(ct.resultCode)
+		c := hexutil.Bytes(ct.resultCode)
 		resultCode.Code = &c
 		return resultCode, nil
 	} else {
@@ -242,7 +241,7 @@ func (api *OverlayAPIImpl) CallConstructor(ctx context.Context, address common.A
 			return nil, err
 		}
 		if len(code) > 0 {
-			c := hexutility.Bytes(code)
+			c := hexutil.Bytes(code)
 			resultCode.Code = &c
 			return resultCode, nil
 		}
@@ -343,23 +342,24 @@ func (api *OverlayAPIImpl) GetLogs(ctx context.Context, crit filters.FilterCrite
 
 	hasOverrides := false
 	allBlocks := roaring64.New()
-	for overlayAddress := range *stateOverride {
-		hasOverrides = true
-		fromB, err := bitmapdb.Get64(tx, kv.CallFromIndex, overlayAddress.Bytes(), begin, end+1)
-		if err != nil {
-			log.Error(err.Error())
-			return nil, err
-		}
-
-		toB, err := bitmapdb.Get64(tx, kv.CallToIndex, overlayAddress.Bytes(), begin, end+1)
-		if err != nil {
-			log.Error(err.Error())
-			return nil, err
-		}
-
-		allBlocks.Or(fromB)
-		allBlocks.Or(toB)
-	}
+	//TODO: use E3 iterators
+	//for overlayAddress := range *stateOverride {
+	//	hasOverrides = true
+	//	fromB, err := bitmapdb.Get64(tx, kv.CallFromIndex, overlayAddress.Bytes(), begin, end+1)
+	//	if err != nil {
+	//		log.Error(err.Error())
+	//		return nil, err
+	//	}
+	//
+	//	toB, err := bitmapdb.Get64(tx, kv.CallToIndex, overlayAddress.Bytes(), begin, end+1)
+	//	if err != nil {
+	//		log.Error(err.Error())
+	//		return nil, err
+	//	}
+	//
+	//	allBlocks.Or(fromB)
+	//	allBlocks.Or(toB)
+	//}
 
 	var failed error
 	idx := 0
@@ -481,7 +481,7 @@ func (api *OverlayAPIImpl) replayBlock(ctx context.Context, blockNum uint64, sta
 	// Setup the gas pool (also for unmetered requests)
 	// and apply the message.
 	gp := new(core.GasPool).AddGas(math.MaxUint64).AddBlobGas(math.MaxUint64)
-	vmConfig := vm.Config{Debug: false}
+	vmConfig := vm.Config{}
 	evm = vm.NewEVM(blockCtx, evmtypes.TxContext{}, statedb, chainConfig, vmConfig)
 	receipts, err := api.getReceipts(ctx, tx, block)
 	if err != nil {
@@ -528,7 +528,7 @@ func (api *OverlayAPIImpl) replayBlock(ctx context.Context, blockNum uint64, sta
 		evm.TxContext = txCtx
 
 		// Execute the transaction message
-		res, err := core.ApplyMessage(evm, msg, gp, true /* refunds */, true /* gasBailout */)
+		res, err := core.ApplyMessage(evm, msg, gp, true /* refunds */, true /* gasBailout */, api.engine())
 		if err != nil {
 			log.Error(err.Error())
 			return nil, err

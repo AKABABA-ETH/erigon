@@ -23,20 +23,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/erigontech/erigon-lib/common/dbg"
-	"github.com/erigontech/erigon-lib/log/v3"
-
-	"github.com/erigontech/erigon-lib/kv"
-	"github.com/erigontech/erigon/core/rawdb/rawtemporaldb"
 	"github.com/holiman/uint256"
 
 	"github.com/erigontech/erigon-lib/chain"
 	libcommon "github.com/erigontech/erigon-lib/common"
+	"github.com/erigontech/erigon-lib/common/dbg"
+	"github.com/erigontech/erigon-lib/crypto"
+	"github.com/erigontech/erigon-lib/kv"
+	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon-lib/state"
 	"github.com/erigontech/erigon-lib/types/accounts"
+	"github.com/erigontech/erigon/core/rawdb/rawtemporaldb"
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/core/vm/evmtypes"
 )
+
+type AAValidationResult struct {
+	PaymasterContext []byte
+	GasUsed          uint64
+}
 
 // ReadWriteSet contains ReadSet, WriteSet and BalanceIncrease of a transaction,
 // which is processed by a single thread that writes into the ReconState1 and
@@ -58,7 +63,7 @@ type TxTask struct {
 	Failed          bool
 	Tx              types.Transaction
 	GetHashFn       func(n uint64) libcommon.Hash
-	TxAsMessage     types.Message
+	TxAsMessage     *types.Message
 	EvmBlockContext evmtypes.BlockContext
 
 	HistoryExecution bool // use history reader for that txn instead of state reader
@@ -85,6 +90,10 @@ type TxTask struct {
 	BlockReceipts types.Receipts
 
 	Config *chain.Config
+
+	AAValidationBatchSize uint64 // number of consecutive RIP-7560 transactions, should be 0 for single transactions and transactions that are not first in the transaction order
+	InBatch               bool   // set to true for consecutive RIP-7560 transactions after the first one (first one is false)
+	ValidationResults     []AAValidationResult
 }
 
 func (t *TxTask) Sender() *libcommon.Address {
@@ -132,12 +141,17 @@ func (t *TxTask) CreateReceipt(tx kv.Tx) {
 		panic(msg)
 	}
 
-	r := t.createReceipt(cumulativeGasUsed)
-	r.FirstLogIndexWithinBlock = firstLogIndex
+	r := t.createReceipt(cumulativeGasUsed, firstLogIndex)
 	t.BlockReceipts[t.TxIndex] = r
 }
 
-func (t *TxTask) createReceipt(cumulativeGasUsed uint64) *types.Receipt {
+func (t *TxTask) createReceipt(cumulativeGasUsed uint64, firstLogIndex uint32) *types.Receipt {
+	logIndex := firstLogIndex
+	for i := range t.Logs {
+		t.Logs[i].Index = uint(logIndex)
+		logIndex++
+	}
+
 	receipt := &types.Receipt{
 		BlockNumber:       t.Header.Number,
 		BlockHash:         t.BlockHash,
@@ -147,6 +161,8 @@ func (t *TxTask) createReceipt(cumulativeGasUsed uint64) *types.Receipt {
 		CumulativeGasUsed: cumulativeGasUsed,
 		TxHash:            t.Tx.Hash(),
 		Logs:              t.Logs,
+
+		FirstLogIndexWithinBlock: firstLogIndex,
 	}
 	blockNum := t.Header.Number.Uint64()
 	for _, l := range receipt.Logs {
@@ -159,10 +175,13 @@ func (t *TxTask) createReceipt(cumulativeGasUsed uint64) *types.Receipt {
 	} else {
 		receipt.Status = types.ReceiptStatusSuccessful
 	}
+
+	receipt.Bloom = types.LogsBloom(receipt.Logs) // why do we need to add this?
 	// if the transaction created a contract, store the creation address in the receipt.
-	//if msg.To() == nil {
-	//	receipt.ContractAddress = crypto.CreateAddress(evm.Origin, tx.GetNonce())
-	//}
+	if t.TxAsMessage.To() == nil {
+		receipt.ContractAddress = crypto.CreateAddress(*t.Sender(), t.Tx.GetNonce())
+	}
+
 	return receipt
 }
 func (t *TxTask) Reset() *TxTask {
@@ -375,7 +394,7 @@ func (q *ResultsQueue) Add(ctx context.Context, task *TxTask) error {
 	}
 	return nil
 }
-func (q *ResultsQueue) drainNoBlock(ctx context.Context, task *TxTask) (closed bool, err error) {
+func (q *ResultsQueue) drainNoBlock(ctx context.Context, task *TxTask) (err error) {
 	q.m.Lock()
 	defer q.m.Unlock()
 	if task != nil {
@@ -385,20 +404,21 @@ func (q *ResultsQueue) drainNoBlock(ctx context.Context, task *TxTask) (closed b
 	for {
 		select {
 		case <-ctx.Done():
-			return q.closed, ctx.Err()
+			return ctx.Err()
 		case txTask, ok := <-q.resultCh:
 			if !ok {
-				return q.closed, nil
+				//log.Warn("[dbg] closed1")
+				return nil
 			}
 			if txTask == nil {
 				continue
 			}
 			heap.Push(q.results, txTask)
 			if q.results.Len() > q.limit {
-				return q.closed, nil
+				return nil
 			}
 		default: // we are inside mutex section, can't block here
-			return q.closed, nil
+			return nil
 		}
 	}
 }
@@ -431,7 +451,7 @@ func (q *ResultsQueue) Drain(ctx context.Context) error {
 		if !ok {
 			return nil
 		}
-		if _, err := q.drainNoBlock(ctx, txTask); err != nil {
+		if err := q.drainNoBlock(ctx, txTask); err != nil {
 			return err
 		}
 	case <-q.ticker.C:
@@ -448,7 +468,7 @@ func (q *ResultsQueue) Drain(ctx context.Context) error {
 }
 
 // DrainNonBlocking - does drain batch of results to heap. Immediately stops at `q.limit` or if nothing to drain
-func (q *ResultsQueue) DrainNonBlocking(ctx context.Context) (closed bool, err error) {
+func (q *ResultsQueue) DrainNonBlocking(ctx context.Context) (err error) {
 	return q.drainNoBlock(ctx, nil)
 }
 
@@ -477,6 +497,8 @@ Loop:
 }
 
 func (q *ResultsQueue) Close() {
+	q.m.Lock()
+	defer q.m.Unlock()
 	if q.closed {
 		return
 	}

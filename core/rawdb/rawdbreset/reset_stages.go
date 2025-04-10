@@ -132,6 +132,7 @@ func ResetPolygonSync(tx kv.RwTx, db kv.RoDB, agg *state.Aggregator, br services
 		kv.BorEventNums,
 		kv.BorEvents,
 		kv.BorSpans,
+		kv.BorEventTimes,
 		kv.BorEventProcessedBlocks,
 		kv.BorMilestones,
 		kv.BorCheckpoints,
@@ -163,7 +164,7 @@ func ResetExec(ctx context.Context, db kv.RwDB, agg *state.Aggregator, chain str
 	cleanupList = append(cleanupList, stateBuckets...)
 	cleanupList = append(cleanupList, stateHistoryBuckets...)
 	cleanupList = append(cleanupList, agg.DomainTables(kv.AccountsDomain, kv.StorageDomain, kv.CodeDomain, kv.CommitmentDomain, kv.ReceiptDomain)...)
-	cleanupList = append(cleanupList, agg.InvertedIndexTables(kv.LogAddrIdxPos, kv.LogTopicIdxPos, kv.TracesFromIdxPos, kv.TracesToIdxPos)...)
+	cleanupList = append(cleanupList, agg.InvertedIndexTables(kv.LogAddrIdx, kv.LogTopicIdx, kv.TracesFromIdx, kv.TracesToIdx)...)
 
 	return db.Update(ctx, func(tx kv.RwTx) error {
 		if err := clearStageProgress(tx, stages.Execution); err != nil {
@@ -199,7 +200,8 @@ var Tables = map[stages.SyncStage][]string{
 }
 var stateBuckets = []string{
 	kv.Epoch, kv.PendingEpoch, kv.Code,
-	kv.PlainContractCode, kv.ContractCode, kv.IncarnationMap,
+	kv.PlainContractCode, kv.IncarnationMap,
+	kv.ReceiptsCache,
 }
 var stateHistoryBuckets = []string{
 	kv.TblPruningProgress,
@@ -230,19 +232,4 @@ func Reset(ctx context.Context, db kv.RwDB, stagesList ...stages.SyncStage) erro
 		}
 		return nil
 	})
-}
-
-func ResetPruneAt(ctx context.Context, db kv.RwDB, stage stages.SyncStage) error {
-	return db.Update(ctx, func(tx kv.RwTx) error {
-		return stages.SaveStagePruneProgress(tx, stage, 0)
-	})
-}
-
-func Warmup(ctx context.Context, db kv.RwDB, lvl log.Lvl, stList ...stages.SyncStage) error {
-	for _, st := range stList {
-		for _, tbl := range Tables[st] {
-			backup.WarmupTable(ctx, db, tbl, lvl, backup.ReadAheadThreads)
-		}
-	}
-	return nil
 }

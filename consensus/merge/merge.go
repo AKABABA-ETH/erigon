@@ -151,10 +151,10 @@ func (s *Merge) CalculateRewards(config *chain.Config, header *types.Header, unc
 
 func (s *Merge) Finalize(config *chain.Config, header *types.Header, state *state.IntraBlockState,
 	txs types.Transactions, uncles []*types.Header, receipts types.Receipts, withdrawals []*types.Withdrawal,
-	chain consensus.ChainReader, syscall consensus.SystemCall, logger log.Logger,
+	chain consensus.ChainReader, syscall consensus.SystemCall, skipReceiptsEval bool, logger log.Logger,
 ) (types.Transactions, types.Receipts, types.FlatRequests, error) {
 	if !misc.IsPoSHeader(header) {
-		return s.eth1Engine.Finalize(config, header, state, txs, uncles, receipts, withdrawals, chain, syscall, logger)
+		return s.eth1Engine.Finalize(config, header, state, txs, uncles, receipts, withdrawals, chain, syscall, skipReceiptsEval, logger)
 	}
 
 	rewards, err := s.CalculateRewards(config, header, uncles, syscall)
@@ -186,21 +186,30 @@ func (s *Merge) Finalize(config *chain.Config, header *types.Header, state *stat
 	}
 
 	var rs types.FlatRequests
-	if config.IsPrague(header.Time) {
-		rs = make(types.FlatRequests, len(types.KnownRequestTypes))
+	if config.IsPrague(header.Time) && !skipReceiptsEval {
+		rs = make(types.FlatRequests, 0)
 		allLogs := make(types.Logs, 0)
-		for _, rec := range receipts {
+		for i, rec := range receipts {
+			if rec == nil {
+				return nil, nil, nil, fmt.Errorf("nil receipt: block %d, txId %d, receipts %s", header.Number, i, receipts)
+			}
 			allLogs = append(allLogs, rec.Logs...)
 		}
 		depositReqs, err := misc.ParseDepositLogs(allLogs, config.DepositContract)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("error: could not parse requests logs: %v", err)
 		}
-		rs[0] = *depositReqs
+		if depositReqs != nil {
+			rs = append(rs, *depositReqs)
+		}
 		withdrawalReq := misc.DequeueWithdrawalRequests7002(syscall)
-		rs[1] = *withdrawalReq
+		if withdrawalReq != nil {
+			rs = append(rs, *withdrawalReq)
+		}
 		consolidations := misc.DequeueConsolidationRequests7251(syscall)
-		rs[2] = *consolidations
+		if consolidations != nil {
+			rs = append(rs, *consolidations)
+		}
 		if header.RequestsHash != nil {
 			rh := rs.Hash()
 			if *header.RequestsHash != *rh {
@@ -219,15 +228,15 @@ func (s *Merge) FinalizeAndAssemble(config *chain.Config, header *types.Header, 
 		return s.eth1Engine.FinalizeAndAssemble(config, header, state, txs, uncles, receipts, withdrawals, chain, syscall, call, logger)
 	}
 	header.RequestsHash = nil
-	outTxs, outReceipts, rs, err := s.Finalize(config, header, state, txs, uncles, receipts, withdrawals, chain, syscall, logger)
+	outTxs, outReceipts, outRequests, err := s.Finalize(config, header, state, txs, uncles, receipts, withdrawals, chain, syscall, false, logger)
 
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	if config.IsPrague(header.Time) {
-		header.RequestsHash = rs.Hash()
+		header.RequestsHash = outRequests.Hash()
 	}
-	return types.NewBlockForAsembling(header, outTxs, uncles, outReceipts, withdrawals), outTxs, outReceipts, rs, nil
+	return types.NewBlockForAsembling(header, outTxs, uncles, outReceipts, withdrawals), outTxs, outReceipts, outRequests, nil
 }
 
 func (s *Merge) SealHash(header *types.Header) (hash libcommon.Hash) {
@@ -302,7 +311,7 @@ func (s *Merge) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 	if err := misc.VerifyPresenceOfCancunHeaderFields(header); err != nil {
 		return err
 	}
-	expectedExcessBlobGas := misc.CalcExcessBlobGas(chain.Config(), parent)
+	expectedExcessBlobGas := misc.CalcExcessBlobGas(chain.Config(), parent, header.Time)
 	if *header.ExcessBlobGas != expectedExcessBlobGas {
 		return fmt.Errorf("invalid excessBlobGas: have %d, want %d", *header.ExcessBlobGas, expectedExcessBlobGas)
 	}

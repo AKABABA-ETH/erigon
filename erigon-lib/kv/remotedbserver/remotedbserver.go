@@ -260,8 +260,8 @@ func (s *KvServer) Tx(stream remote.KV_TxServer) error {
 				if err != nil {
 					return fmt.Errorf("kvserver: %w", err)
 				}
-				c.k = bytesCopy(k)
-				c.v = bytesCopy(v)
+				c.k = common.CopyBytes(k)
+				c.v = common.CopyBytes(v)
 			}
 
 			if err := s.renew(stream.Context(), id); err != nil {
@@ -421,15 +421,6 @@ func handleOp(c kv.Cursor, stream remote.KV_TxServer, in *remote.Cursor) error {
 	return nil
 }
 
-func bytesCopy(b []byte) []byte {
-	if b == nil {
-		return nil
-	}
-	copiedBytes := make([]byte, len(b))
-	copy(copiedBytes, b)
-	return copiedBytes
-}
-
 func (s *KvServer) StateChanges(_ *remote.StateChangeRequest, server remote.KV_StateChangesServer) error {
 	ch, remove := s.stateChangeStreams.Sub()
 	defer remove()
@@ -471,6 +462,21 @@ func (s *KvServer) Snapshots(_ context.Context, _ *remote.SnapshotsRequest) (rep
 		reply.HistoryFiles = s.historySnapshots.Files()
 	}
 
+	return reply, nil
+}
+
+func (s *KvServer) Sequence(_ context.Context, req *remote.SequenceReq) (reply *remote.SequenceReply, err error) {
+	reply = &remote.SequenceReply{}
+	if err := s.with(req.TxId, func(tx kv.Tx) error {
+		ttx, ok := tx.(kv.TemporalTx)
+		if !ok {
+			return errors.New("server DB doesn't implement kv.Temporal interface")
+		}
+		reply.Value, err = ttx.ReadSequence(req.Table)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	return reply, nil
 }
 
@@ -647,8 +653,8 @@ func (s *KvServer) HistoryRange(_ context.Context, req *remote.HistoryRangeReq) 
 			if err != nil {
 				return err
 			}
-			key := bytesCopy(k)
-			value := bytesCopy(v)
+			key := common.CopyBytes(k)
+			value := common.CopyBytes(v)
 			reply.Keys = append(reply.Keys, key)
 			reply.Values = append(reply.Values, value)
 		}
@@ -692,8 +698,8 @@ func (s *KvServer) RangeAsOf(_ context.Context, req *remote.RangeAsOfReq) (*remo
 			if err != nil {
 				return err
 			}
-			key := bytesCopy(k)
-			value := bytesCopy(v)
+			key := common.CopyBytes(k)
+			value := common.CopyBytes(v)
 			reply.Keys = append(reply.Keys, key)
 			reply.Values = append(reply.Values, value)
 			limit--

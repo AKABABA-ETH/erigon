@@ -25,16 +25,16 @@ import (
 	"time"
 
 	"github.com/c2h5oh/datasize"
+	"github.com/holiman/uint256"
+	"github.com/stretchr/testify/require"
+
 	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/datadir"
 	"github.com/erigontech/erigon-lib/common/length"
 	"github.com/erigontech/erigon-lib/kv"
 	"github.com/erigontech/erigon-lib/kv/mdbx"
 	"github.com/erigontech/erigon-lib/log/v3"
-	"github.com/erigontech/erigon-lib/types"
-	"github.com/holiman/uint256"
-
-	"github.com/stretchr/testify/require"
+	"github.com/erigontech/erigon-lib/types/accounts"
 )
 
 func Fuzz_BtreeIndex_Allocation(f *testing.F) {
@@ -64,7 +64,7 @@ func Fuzz_AggregatorV3_Merge(f *testing.F) {
 
 	ac := agg.BeginFilesRo()
 	defer ac.Close()
-	domains, err := NewSharedDomains(WrapTxWithCtx(rwTx, ac), log.New())
+	domains, err := NewSharedDomains(wrapTxWithCtx(rwTx, ac), log.New())
 	require.NoError(f, err)
 	defer domains.Close()
 
@@ -96,8 +96,13 @@ func Fuzz_AggregatorV3_Merge(f *testing.F) {
 		}
 		for txNum := uint64(1); txNum <= txs; txNum++ {
 			domains.SetTxNum(txNum)
-
-			buf := types.EncodeAccountBytesV3(1, uint256.NewInt(0), nil, 0)
+			acc := accounts.Account{
+				Nonce:       1,
+				Balance:     *uint256.NewInt(0),
+				CodeHash:    common.Hash{},
+				Incarnation: 0,
+			}
+			buf := accounts.SerialiseV3(&acc)
 			err = domains.DomainPut(kv.AccountsDomain, addrs[txNum].Bytes(), nil, buf, nil, 0)
 			require.NoError(t, err)
 
@@ -186,7 +191,7 @@ func Fuzz_AggregatorV3_MergeValTransform(f *testing.F) {
 	}()
 	ac := agg.BeginFilesRo()
 	defer ac.Close()
-	domains, err := NewSharedDomains(WrapTxWithCtx(rwTx, ac), log.New())
+	domains, err := NewSharedDomains(wrapTxWithCtx(rwTx, ac), log.New())
 	require.NoError(f, err)
 	defer domains.Close()
 
@@ -215,8 +220,13 @@ func Fuzz_AggregatorV3_MergeValTransform(f *testing.F) {
 		}
 		for txNum := uint64(1); txNum <= txs; txNum++ {
 			domains.SetTxNum(txNum)
-
-			buf := types.EncodeAccountBytesV3(1, uint256.NewInt(txNum*1e6), nil, 0)
+			acc := accounts.Account{
+				Nonce:       1,
+				Balance:     *uint256.NewInt(txNum * 1e6),
+				CodeHash:    common.Hash{},
+				Incarnation: 0,
+			}
+			buf := accounts.SerialiseV3(&acc)
 			err = domains.DomainPut(kv.AccountsDomain, addrs[txNum].Bytes(), nil, buf, nil, 0)
 			require.NoError(t, err)
 
@@ -276,7 +286,7 @@ func testFuzzDbAndAggregatorv3(f *testing.F, aggStep uint64) (kv.RwDB, *Aggregat
 	db := mdbx.New(kv.ChainDB, logger).InMem(dirs.Chaindata).GrowthStep(32 * datasize.MB).MapSize(2 * datasize.GB).MustOpen()
 	f.Cleanup(db.Close)
 
-	agg, err := NewAggregator2(context.Background(), dirs, aggStep, db, logger)
+	agg, err := NewAggregator(context.Background(), dirs, aggStep, db, logger)
 	require.NoError(err)
 	f.Cleanup(agg.Close)
 	err = agg.OpenFolder()

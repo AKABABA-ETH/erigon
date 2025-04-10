@@ -99,12 +99,13 @@ type histCfg struct {
 	indexList     Accessors
 	compressorCfg seg.Cfg             // compression settings for history files
 	compression   seg.FileCompression // defines type of compression for history files
+	historyIdx    kv.InvertedIdx
 
 	//TODO: re-visit this check - maybe we don't need it. It's about kill in the middle of merge
 	integrity rangeIntegrityChecker
 }
 
-func NewHistory(cfg histCfg, logger log.Logger) (*History, error) {
+func NewHistory(cfg histCfg, aggStep uint64, logger log.Logger) (*History, error) {
 	//if cfg.compressorCfg.MaxDictPatterns == 0 && cfg.compressorCfg.MaxPatternLen == 0 {
 	cfg.compressorCfg = seg.DefaultCfg
 	if cfg.indexList == 0 {
@@ -129,7 +130,7 @@ func NewHistory(cfg histCfg, logger log.Logger) (*History, error) {
 	}
 
 	var err error
-	h.InvertedIndex, err = NewInvertedIndex(cfg.iiCfg, logger)
+	h.InvertedIndex, err = NewInvertedIndex(cfg.iiCfg, aggStep, logger)
 	if err != nil {
 		return nil, fmt.Errorf("NewHistory: %s, %w", cfg.iiCfg.filenameBase, err)
 	}
@@ -314,22 +315,15 @@ func (ht *HistoryRoTx) Files() (res []string) {
 	return append(res, ht.iit.Files()...)
 }
 
-func (h *History) missedAccessors() (l []*filesItem) {
-	h.dirtyFiles.Walk(func(items []*filesItem) bool { // don't run slow logic while iterating on btree
-		for _, item := range items {
-			fromStep, toStep := item.startTxNum/h.aggregationStep, item.endTxNum/h.aggregationStep
-			exists, err := dir.FileExist(h.vAccessorFilePath(fromStep, toStep))
-			if err != nil {
-				_, fName := filepath.Split(h.vAccessorFilePath(fromStep, toStep))
-				h.logger.Warn("[agg] History.missedAccessors", "err", err, "f", fName)
-			}
-			if !exists {
-				l = append(l, item)
-			}
+func (h *History) missedMapAccessors() (l []*filesItem) {
+	if !h.indexList.Has(AccessorHashMap) {
+		return nil
+	}
+	return fileItemsWithMissingAccessors(h.dirtyFiles, h.aggregationStep, func(fromStep, toStep uint64) []string {
+		return []string{
+			h.vAccessorFilePath(fromStep, toStep),
 		}
-		return true
 	})
-	return l
 }
 
 func (h *History) buildVi(ctx context.Context, item *filesItem, ps *background.ProgressSet) (err error) {
@@ -438,8 +432,7 @@ func (h *History) buildVI(ctx context.Context, historyIdxPath string, hist, efHi
 
 func (h *History) BuildMissedAccessors(ctx context.Context, g *errgroup.Group, ps *background.ProgressSet) {
 	h.InvertedIndex.BuildMissedAccessors(ctx, g, ps)
-	missedFiles := h.missedAccessors()
-	for _, item := range missedFiles {
+	for _, item := range h.missedMapAccessors() {
 		item := item
 		g.Go(func() error {
 			return h.buildVi(ctx, item, ps)
@@ -519,7 +512,7 @@ type historyBufferedWriter struct {
 	//   vals: key1+key2+txNum -> value (not DupSort)
 	largeValues bool
 
-	ii *invertedIndexBufferedWriter
+	ii *InvertedIndexBufferedWriter
 }
 
 func (w *historyBufferedWriter) SetTxNum(v uint64) { w.ii.SetTxNum(v) }
@@ -1208,7 +1201,7 @@ func (ht *HistoryRoTx) encodeTs(txNum uint64, key []byte) []byte {
 func (ht *HistoryRoTx) HistorySeek(key []byte, txNum uint64, roTx kv.Tx) ([]byte, bool, error) {
 	v, ok, err := ht.historySeekInFiles(key, txNum)
 	if err != nil {
-		return nil, ok, err
+		return nil, false, err
 	}
 	if ok {
 		return v, true, nil
@@ -1309,7 +1302,7 @@ func (ht *HistoryRoTx) RangeAsOf(ctx context.Context, startTxNum uint64, from, t
 }
 
 func (ht *HistoryRoTx) iterateChangedFrozen(fromTxNum, toTxNum int, asc order.By, limit int) (stream.KV, error) {
-	if asc == false {
+	if asc == order.Desc {
 		panic("not supported yet")
 	}
 	if len(ht.iit.files) == 0 {

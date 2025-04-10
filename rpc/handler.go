@@ -84,7 +84,7 @@ type handler struct {
 
 type callProc struct {
 	ctx       context.Context
-	notifiers []*Notifier
+	notifiers []*RemoteNotifier
 }
 
 func HandleError(err error, stream *jsoniter.Stream) {
@@ -305,7 +305,7 @@ func (h *handler) cancelAllRequests(err error, inflightReq *requestOp) {
 	}
 }
 
-func (h *handler) addSubscriptions(nn []*Notifier) {
+func (h *handler) addSubscriptions(nn []*RemoteNotifier) {
 	h.subLock.Lock()
 	defer h.subLock.Unlock()
 
@@ -431,7 +431,7 @@ func (h *handler) handleCallMsg(ctx *callProc, msg *jsonrpcMessage, stream *json
 			}
 		}
 
-		if resp != nil && resp.Error != nil {
+		if resp != nil && resp.Error != nil && resp.Error.Message != "context canceled" {
 			if resp.Error.Data != nil {
 				h.logger.Warn("[rpc] served", "method", msg.Method, "reqid", idForLog(msg.ID),
 					"err", resp.Error.Message, "errdata", resp.Error.Data)
@@ -521,9 +521,9 @@ func (h *handler) handleSubscribe(cp *callProc, msg *jsonrpcMessage, stream *jso
 	args = args[1:]
 
 	// Install notifier in context so the subscription handler can find it.
-	n := &Notifier{h: h, namespace: namespace}
+	n := &RemoteNotifier{h: h, namespace: namespace}
 	cp.notifiers = append(cp.notifiers, n)
-	ctx := context.WithValue(cp.ctx, notifierKey{}, n)
+	ctx := ContextWithNotifier(cp.ctx, n)
 
 	return h.runMethod(ctx, msg, callb, args, stream)
 }

@@ -26,10 +26,12 @@ import (
 
 	btree2 "github.com/tidwall/btree"
 
+	"github.com/erigontech/erigon-lib/common/dir"
 	"github.com/erigontech/erigon-lib/config3"
 	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon-lib/recsplit"
 	"github.com/erigontech/erigon-lib/seg"
+	ae "github.com/erigontech/erigon-lib/state/appendable_extras"
 )
 
 // filesItem is "dirty" file - means file which can be:
@@ -61,12 +63,37 @@ type filesItem struct {
 	canDelete atomic.Bool
 }
 
+type FilesItem interface {
+	Segment() *seg.Decompressor
+	AccessorIndex() *recsplit.Index
+	BtIndex() *BtIndex
+	ExistenceFilter() *ExistenceFilter
+}
+
+var _ FilesItem = (*filesItem)(nil)
+
 func newFilesItem(startTxNum, endTxNum, stepSize uint64) *filesItem {
+	return newFilesItemWithFrozenSteps(startTxNum, endTxNum, stepSize, config3.StepsInFrozenFile)
+}
+
+func newFilesItemWithSnapConfig(startTxNum, endTxNum uint64, snapConfig *ae.SnapshotConfig) *filesItem {
+	return newFilesItemWithFrozenSteps(startTxNum, endTxNum, snapConfig.RootNumPerStep, snapConfig.StepsInFrozenFile())
+}
+
+func newFilesItemWithFrozenSteps(startTxNum, endTxNum, stepSize uint64, stepsInFrozenFile uint64) *filesItem {
 	startStep := startTxNum / stepSize
 	endStep := endTxNum / stepSize
-	frozen := endStep-startStep == config3.StepsInFrozenFile
+	frozen := endStep-startStep >= stepsInFrozenFile
 	return &filesItem{startTxNum: startTxNum, endTxNum: endTxNum, frozen: frozen}
 }
+
+func (i *filesItem) Segment() *seg.Decompressor { return i.decompressor }
+
+func (i *filesItem) AccessorIndex() *recsplit.Index { return i.index }
+
+func (i *filesItem) BtIndex() *BtIndex { return i.bindex }
+
+func (i *filesItem) ExistenceFilter() *ExistenceFilter { return i.existence }
 
 // isSubsetOf - when `j` covers `i` but not equal `i`
 func (i *filesItem) isSubsetOf(j *filesItem) bool {
@@ -344,13 +371,24 @@ func (files visibleFiles) LatestMergedRange() MergeRange {
 	return MergeRange{}
 }
 
-func (files visibleFiles) MergedRanges() []MergeRange {
-	if len(files) == 0 {
-		return nil
-	}
-	res := make([]MergeRange, len(files))
-	for i := len(files) - 1; i >= 0; i-- {
-		res[i] = MergeRange{from: files[i].startTxNum, to: files[i].endTxNum}
-	}
-	return res
+// fileItemsWithMissingAccessors returns list of files with missing accessors
+// here "accessors" are generated dynamically by `accessorsFor`
+func fileItemsWithMissingAccessors(dirtyFiles *btree2.BTreeG[*filesItem], aggregationStep uint64, accessorsFor func(fromStep, toStep uint64) []string) (l []*filesItem) {
+	dirtyFiles.Walk(func(items []*filesItem) bool {
+		for _, item := range items {
+			fromStep, toStep := item.startTxNum/aggregationStep, item.endTxNum/aggregationStep
+			for _, fName := range accessorsFor(fromStep, toStep) {
+				exists, err := dir.FileExist(fName)
+				if err != nil {
+					panic(err)
+				}
+				if !exists {
+					l = append(l, item)
+					break
+				}
+			}
+		}
+		return true
+	})
+	return
 }

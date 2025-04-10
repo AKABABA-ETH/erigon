@@ -18,13 +18,15 @@ package exec3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
-	"github.com/erigontech/erigon-lib/common/dbg"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/erigontech/erigon-lib/common/dbg"
 	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon/polygon/aa"
 
 	"github.com/erigontech/erigon-lib/common/datadir"
 	"github.com/erigontech/erigon/eth/consensuschain"
@@ -36,6 +38,7 @@ import (
 	"github.com/erigontech/erigon/consensus"
 	"github.com/erigontech/erigon/core"
 	"github.com/erigontech/erigon/core/state"
+	"github.com/erigontech/erigon/core/tracing"
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/core/vm"
 	"github.com/erigontech/erigon/core/vm/evmtypes"
@@ -53,7 +56,7 @@ type Worker struct {
 	background  bool // if true - worker does manage RoTx (begin/rollback) in .ResetTx()
 	blockReader services.FullBlockReader
 	in          *state.QueueWithRetry
-	rs          *state.StateV3
+	rs          *state.ParallelExecutionState
 	stateWriter *state.StateWriterV3
 	stateReader state.ResettableStateReader
 	historyMode bool // if true - stateReader is HistoryReaderV3, otherwise it's state reader
@@ -67,6 +70,7 @@ type Worker struct {
 
 	callTracer  *CallTracer
 	taskGasPool *core.GasPool
+	hooks       *tracing.Hooks
 
 	evm   *vm.EVM
 	ibs   *state.IntraBlockState
@@ -77,7 +81,7 @@ type Worker struct {
 	isMining bool
 }
 
-func NewWorker(lock sync.Locker, logger log.Logger, ctx context.Context, background bool, chainDb kv.RoDB, in *state.QueueWithRetry, blockReader services.FullBlockReader, chainConfig *chain.Config, genesis *types.Genesis, results *state.ResultsQueue, engine consensus.Engine, dirs datadir.Dirs, isMining bool) *Worker {
+func NewWorker(lock sync.Locker, logger log.Logger, hooks *tracing.Hooks, ctx context.Context, background bool, chainDb kv.RoDB, in *state.QueueWithRetry, blockReader services.FullBlockReader, chainConfig *chain.Config, genesis *types.Genesis, results *state.ResultsQueue, engine consensus.Engine, dirs datadir.Dirs, isMining bool) *Worker {
 	w := &Worker{
 		lock:        lock,
 		logger:      logger,
@@ -93,22 +97,23 @@ func NewWorker(lock sync.Locker, logger log.Logger, ctx context.Context, backgro
 		engine:   engine,
 
 		evm:         vm.NewEVM(evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, chainConfig, vm.Config{}),
-		callTracer:  NewCallTracer(),
+		callTracer:  NewCallTracer(hooks),
 		taskGasPool: new(core.GasPool),
+		hooks:       hooks,
 
 		dirs: dirs,
 
 		isMining: isMining,
 	}
-	w.taskGasPool.AddBlobGas(chainConfig.GetMaxBlobGasPerBlock())
-	w.vmCfg = vm.Config{Debug: true, Tracer: w.callTracer}
+	w.taskGasPool.AddBlobGas(chainConfig.GetMaxBlobGasPerBlock(0))
+	w.vmCfg = vm.Config{Tracer: w.callTracer.Tracer().Hooks}
 	w.ibs = state.New(w.stateReader)
 	return w
 }
 
 func (rw *Worker) LogLRUStats() { rw.evm.JumpDestCache.LogStats() }
 
-func (rw *Worker) ResetState(rs *state.StateV3, accumulator *shards.Accumulator) {
+func (rw *Worker) ResetState(rs *state.ParallelExecutionState, accumulator *shards.Accumulator) {
 	rw.rs = rs
 	if rw.background {
 		rw.SetReader(state.NewReaderParallelV3(rs.Domains()))
@@ -152,7 +157,7 @@ func (rw *Worker) Run() (err error) {
 func (rw *Worker) RunTxTask(txTask *state.TxTask, isMining bool) {
 	rw.lock.Lock()
 	defer rw.lock.Unlock()
-	rw.RunTxTaskNoLock(txTask, isMining)
+	rw.RunTxTaskNoLock(txTask, isMining, false)
 }
 
 // Needed to set history reader when need to offset few txs from block beginning and does not break processing,
@@ -174,7 +179,7 @@ func (rw *Worker) SetReader(reader state.ResettableStateReader) {
 	}
 }
 
-func (rw *Worker) RunTxTaskNoLock(txTask *state.TxTask, isMining bool) {
+func (rw *Worker) RunTxTaskNoLock(txTask *state.TxTask, isMining, skipPostEvaluaion bool) {
 	if txTask.HistoryExecution && !rw.historyMode {
 		// in case if we cancelled execution and commitment happened in the middle of the block, we have to process block
 		// from the beginning until committed txNum and only then disable history mode.
@@ -205,6 +210,7 @@ func (rw *Worker) RunTxTaskNoLock(txTask *state.TxTask, isMining bool) {
 	rw.ibs.Reset()
 	ibs := rw.ibs
 	//ibs.SetTrace(true)
+	ibs.SetHooks(rw.hooks)
 
 	rules := txTask.Rules
 	var err error
@@ -228,25 +234,32 @@ func (rw *Worker) RunTxTaskNoLock(txTask *state.TxTask, isMining bool) {
 		// Block initialisation
 		//fmt.Printf("txNum=%d, blockNum=%d, initialisation of the block\n", txTask.TxNum, txTask.BlockNum)
 		syscall := func(contract libcommon.Address, data []byte, ibs *state.IntraBlockState, header *types.Header, constCall bool) ([]byte, error) {
-			return core.SysCallContract(contract, data, rw.chainConfig, ibs, header, rw.engine, constCall /* constCall */)
+			ret, _, err := core.SysCallContract(contract, data, rw.chainConfig, ibs, header, rw.engine, constCall /* constCall */, rw.hooks)
+			return ret, err
 		}
-		rw.engine.Initialize(rw.chainConfig, rw.chain, header, ibs, syscall, rw.logger, nil)
+		rw.engine.Initialize(rw.chainConfig, rw.chain, header, ibs, syscall, rw.logger, rw.hooks)
 		txTask.Error = ibs.FinalizeTx(rules, noop)
 	case txTask.Final:
 		if txTask.BlockNum == 0 {
 			break
 		}
 
-		//fmt.Printf("txNum=%d, blockNum=%d, finalisation of the block\n", txTask.TxNum, txTask.BlockNum)
 		// End of block transaction in a block
 		syscall := func(contract libcommon.Address, data []byte) ([]byte, error) {
-			return core.SysCallContract(contract, data, rw.chainConfig, ibs, header, rw.engine, false /* constCall */)
+			ret, logs, err := core.SysCallContract(contract, data, rw.chainConfig, ibs, header, rw.engine, false /* constCall */, rw.hooks)
+			if err != nil {
+				return nil, err
+			}
+
+			txTask.Logs = append(txTask.Logs, logs...)
+
+			return ret, err
 		}
 
 		if isMining {
 			_, txTask.Txs, txTask.BlockReceipts, _, err = rw.engine.FinalizeAndAssemble(rw.chainConfig, types.CopyHeader(header), ibs, txTask.Txs, txTask.Uncles, txTask.BlockReceipts, txTask.Withdrawals, rw.chain, syscall, nil, rw.logger)
 		} else {
-			_, _, _, err = rw.engine.Finalize(rw.chainConfig, types.CopyHeader(header), ibs, txTask.Txs, txTask.Uncles, txTask.BlockReceipts, txTask.Withdrawals, rw.chain, syscall, rw.logger)
+			_, _, _, err = rw.engine.Finalize(rw.chainConfig, types.CopyHeader(header), ibs, txTask.Txs, txTask.Uncles, txTask.BlockReceipts, txTask.Withdrawals, rw.chain, syscall, skipPostEvaluaion, rw.logger)
 		}
 		if err != nil {
 			txTask.Error = err
@@ -262,25 +275,35 @@ func (rw *Worker) RunTxTaskNoLock(txTask *state.TxTask, isMining bool) {
 			}
 		}
 	default:
-		rw.taskGasPool.Reset(txTask.Tx.GetGas(), rw.chainConfig.GetMaxBlobGasPerBlock())
+		rw.taskGasPool.Reset(txTask.Tx.GetGasLimit(), rw.chainConfig.GetMaxBlobGasPerBlock(header.Time))
 		rw.callTracer.Reset()
 		rw.vmCfg.SkipAnalysis = txTask.SkipAnalysis
 		ibs.SetTxContext(txTask.TxIndex)
-		msg := txTask.TxAsMessage
-		if msg.FeeCap().IsZero() && rw.engine != nil {
-			// Only zero-gas transactions may be service ones
-			syscall := func(contract libcommon.Address, data []byte) ([]byte, error) {
-				return core.SysCallContract(contract, data, rw.chainConfig, ibs, header, rw.engine, true /* constCall */)
+		tx := txTask.Tx
+
+		if txTask.Tx.Type() == types.AccountAbstractionTxType {
+			if !rw.chainConfig.AllowAA {
+				txTask.Error = errors.New("account abstraction transactions are not allowed")
+				break
 			}
-			msg.SetIsFree(rw.engine.IsServiceTransaction(msg.From(), syscall))
+
+			rw.execAATxn(txTask)
 		}
+
+		msg := txTask.TxAsMessage
 
 		rw.evm.ResetBetweenBlocks(txTask.EvmBlockContext, core.NewEVMTxContext(msg), ibs, rw.vmCfg, rules)
 
+		if rw.hooks != nil && rw.hooks.OnTxStart != nil {
+			rw.hooks.OnTxStart(rw.evm.GetVMContext(), tx, msg.From())
+		}
 		// MA applytx
-		applyRes, err := core.ApplyMessage(rw.evm, msg, rw.taskGasPool, true /* refunds */, false /* gasBailout */)
+		applyRes, err := core.ApplyMessage(rw.evm, msg, rw.taskGasPool, true /* refunds */, false /* gasBailout */, rw.engine)
 		if err != nil {
 			txTask.Error = err
+			if rw.hooks != nil && rw.hooks.OnTxEnd != nil {
+				rw.hooks.OnTxEnd(nil, err)
+			}
 		} else {
 			txTask.Failed = applyRes.Failed()
 			txTask.UsedGas = applyRes.UsedGas
@@ -290,6 +313,11 @@ func (rw *Worker) RunTxTaskNoLock(txTask *state.TxTask, isMining bool) {
 			txTask.Logs = ibs.GetLogs(txTask.TxIndex, txTask.Tx.Hash(), txTask.BlockNum, txTask.BlockHash)
 			txTask.TraceFroms = rw.callTracer.Froms()
 			txTask.TraceTos = rw.callTracer.Tos()
+
+			txTask.CreateReceipt(rw.Tx())
+			if rw.hooks != nil && rw.hooks.OnTxEnd != nil {
+				rw.hooks.OnTxEnd(txTask.BlockReceipts[txTask.TxIndex], nil)
+			}
 		}
 
 	}
@@ -308,7 +336,76 @@ func (rw *Worker) RunTxTaskNoLock(txTask *state.TxTask, isMining bool) {
 	}
 }
 
-func NewWorkersPool(lock sync.Locker, accumulator *shards.Accumulator, logger log.Logger, ctx context.Context, background bool, chainDb kv.RoDB, rs *state.StateV3, in *state.QueueWithRetry, blockReader services.FullBlockReader, chainConfig *chain.Config, genesis *types.Genesis, engine consensus.Engine, workerCount int, dirs datadir.Dirs, isMining bool) (reconWorkers []*Worker, applyWorker *Worker, rws *state.ResultsQueue, clear func(), wait func()) {
+func (rw *Worker) execAATxn(txTask *state.TxTask) {
+	if !txTask.InBatch {
+		// this is the first transaction in an AA transaction batch, run all validation frames, then execute execution frames in its own txtask
+		startIdx := uint64(txTask.TxIndex)
+		endIdx := startIdx + txTask.AAValidationBatchSize
+
+		validationResults := make([]state.AAValidationResult, txTask.AAValidationBatchSize)
+		log.Debug("🕵️‍♂️[aa] found AA bundle", "startIdx", startIdx, "endIdx", endIdx-1)
+
+		var outerErr error
+		for i := startIdx; i < endIdx; i++ {
+			// check if next n transactions are AA transactions and run validation
+			if txTask.Txs[i].Type() == types.AccountAbstractionTxType {
+				aaTxn, ok := txTask.Tx.(*types.AccountAbstractionTransaction)
+				if !ok {
+					outerErr = fmt.Errorf("invalid transaction type, expected AccountAbstractionTx, got %T", txTask.Tx)
+					break
+				}
+
+				paymasterContext, validationGasUsed, err := aa.ValidateAATransaction(aaTxn, rw.ibs, rw.taskGasPool, txTask.Header, rw.evm, rw.chainConfig)
+				if err != nil {
+					outerErr = err
+					break
+				}
+
+				validationResults[i-startIdx] = state.AAValidationResult{
+					PaymasterContext: paymasterContext,
+					GasUsed:          validationGasUsed,
+				}
+			} else {
+				outerErr = fmt.Errorf("invalid txcount, expected txn %d to be type %d", i, types.AccountAbstractionTxType)
+				break
+			}
+		}
+
+		if outerErr != nil {
+			txTask.Error = outerErr
+			return
+		}
+		log.Debug("✅[aa] validated AA bundle", "len", startIdx-endIdx)
+
+		txTask.ValidationResults = validationResults
+	}
+
+	if len(txTask.ValidationResults) == 0 {
+		txTask.Error = fmt.Errorf("found RIP-7560 but no remaining validation results, txIndex %d", txTask.TxIndex)
+	}
+
+	aaTxn := txTask.Tx.(*types.AccountAbstractionTransaction) // type cast checked earlier
+	validationRes := txTask.ValidationResults[0]
+	txTask.ValidationResults = txTask.ValidationResults[1:]
+
+	status, gasUsed, err := aa.ExecuteAATransaction(aaTxn, validationRes.PaymasterContext, validationRes.GasUsed, rw.taskGasPool, rw.evm, txTask.Header, rw.ibs)
+	if err != nil {
+		txTask.Error = err
+		return
+	}
+
+	txTask.Failed = status != 0
+	txTask.UsedGas = gasUsed
+	// Update the state with pending changes
+	rw.ibs.SoftFinalise()
+	txTask.Logs = rw.ibs.GetLogs(txTask.TxIndex, txTask.Tx.Hash(), txTask.BlockNum, txTask.BlockHash)
+	txTask.TraceFroms = rw.callTracer.Froms()
+	txTask.TraceTos = rw.callTracer.Tos()
+
+	log.Debug("✅[aa] executed AA bundle transaction", "txIndex", txTask.TxIndex)
+}
+
+func NewWorkersPool(lock sync.Locker, accumulator *shards.Accumulator, logger log.Logger, hooks *tracing.Hooks, ctx context.Context, background bool, chainDb kv.RoDB, rs *state.ParallelExecutionState, in *state.QueueWithRetry, blockReader services.FullBlockReader, chainConfig *chain.Config, genesis *types.Genesis, engine consensus.Engine, workerCount int, dirs datadir.Dirs, isMining bool) (reconWorkers []*Worker, applyWorker *Worker, rws *state.ResultsQueue, clear func(), wait func()) {
 	reconWorkers = make([]*Worker, workerCount)
 
 	resultChSize := workerCount * 8
@@ -319,7 +416,7 @@ func NewWorkersPool(lock sync.Locker, accumulator *shards.Accumulator, logger lo
 		ctx, cancel := context.WithCancel(ctx)
 		g, ctx := errgroup.WithContext(ctx)
 		for i := 0; i < workerCount; i++ {
-			reconWorkers[i] = NewWorker(lock, logger, ctx, background, chainDb, in, blockReader, chainConfig, genesis, rws, engine, dirs, isMining)
+			reconWorkers[i] = NewWorker(lock, logger, hooks, ctx, background, chainDb, in, blockReader, chainConfig, genesis, rws, engine, dirs, isMining)
 			reconWorkers[i].ResetState(rs, accumulator)
 		}
 		if background {
@@ -346,7 +443,7 @@ func NewWorkersPool(lock sync.Locker, accumulator *shards.Accumulator, logger lo
 			//applyWorker.ResetTx(nil)
 		}
 	}
-	applyWorker = NewWorker(lock, logger, ctx, false, chainDb, in, blockReader, chainConfig, genesis, rws, engine, dirs, isMining)
+	applyWorker = NewWorker(lock, logger, hooks, ctx, false, chainDb, in, blockReader, chainConfig, genesis, rws, engine, dirs, isMining)
 
 	return reconWorkers, applyWorker, rws, clear, wait
 }

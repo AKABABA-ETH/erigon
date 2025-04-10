@@ -33,14 +33,13 @@ import (
 
 	ethereum "github.com/erigontech/erigon"
 	libcommon "github.com/erigontech/erigon-lib/common"
-	"github.com/erigontech/erigon-lib/common/hexutility"
+	"github.com/erigontech/erigon-lib/common/hexutil"
 	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon/cmd/devnet/devnetutils"
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/p2p"
 	"github.com/erigontech/erigon/rpc"
 	"github.com/erigontech/erigon/turbo/adapter/ethapi"
-	"github.com/erigontech/erigon/turbo/jsonrpc"
 )
 
 type callResult struct {
@@ -74,7 +73,7 @@ type RequestGenerator interface {
 	GetBalance(address libcommon.Address, blockRef rpc.BlockReference) (*big.Int, error)
 	AdminNodeInfo() (p2p.NodeInfo, error)
 	GetBlockByNumber(ctx context.Context, blockNum rpc.BlockNumber, withTxs bool) (*Block, error)
-	GetTransactionByHash(hash libcommon.Hash) (*jsonrpc.RPCTransaction, error)
+	GetTransactionByHash(hash libcommon.Hash) (*ethapi.RPCTransaction, error)
 	GetTransactionReceipt(ctx context.Context, hash libcommon.Hash) (*types.Receipt, error)
 	TraceTransaction(hash libcommon.Hash) ([]TransactionTrace, error)
 	GetTransactionCount(address libcommon.Address, blockRef rpc.BlockReference) (*big.Int, error)
@@ -87,7 +86,7 @@ type RequestGenerator interface {
 	Call(args ethapi.CallArgs, blockRef rpc.BlockReference, overrides *ethapi.StateOverrides) ([]byte, error)
 	TraceCall(blockRef rpc.BlockReference, args ethapi.CallArgs, traceOpts ...TraceOpt) (*TraceCallResult, error)
 	DebugAccountAt(blockHash libcommon.Hash, txIndex uint64, account libcommon.Address) (*AccountResult, error)
-	GetCode(address libcommon.Address, blockRef rpc.BlockReference) (hexutility.Bytes, error)
+	GetCode(address libcommon.Address, blockRef rpc.BlockReference) (hexutil.Bytes, error)
 	EstimateGas(args ethereum.CallMsg, blockNum BlockNumber) (uint64, error)
 	GasPrice() (*big.Int, error)
 
@@ -319,7 +318,13 @@ func NewRequestGenerator(target string, logger log.Logger) RequestGenerator {
 func (req *requestGenerator) rpcClient(ctx context.Context) (*rpc.Client, error) {
 	if req.requestClient == nil {
 		var err error
-		req.requestClient, err = rpc.DialContext(ctx, "http://"+req.target, req.logger)
+		var url string
+		if strings.HasPrefix(req.target, "http") {
+			url = req.target
+		} else {
+			url = "http://" + req.target
+		}
+		req.requestClient, err = rpc.DialContext(ctx, url, req.logger)
 		if err != nil {
 			return nil, err
 		}

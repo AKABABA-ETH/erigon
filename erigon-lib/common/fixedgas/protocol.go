@@ -19,11 +19,13 @@ package fixedgas
 const (
 	TxGas                     uint64 = 21000 // Per transaction not creating a contract. NOTE: Not payable on data of calls between transactions.
 	TxGasContractCreation     uint64 = 53000 // Per transaction that creates a contract. NOTE: Not payable on data of calls between transactions.
+	TxAAGas                   uint64 = 15000 // Per account abstraction transaction
 	TxDataZeroGas             uint64 = 4     // Per byte of data attached to a transaction that equals zero. NOTE: Not payable on data of calls between transactions.
 	TxDataNonZeroGasFrontier  uint64 = 68    // Per byte of data attached to a transaction that is not equal to zero. NOTE: Not payable on data of calls between transactions.
 	TxDataNonZeroGasEIP2028   uint64 = 16    // Per byte of non zero data attached to a transaction after EIP 2028 (part in Istanbul)
 	TxAccessListAddressGas    uint64 = 2400  // Per address specified in EIP 2930 access list
 	TxAccessListStorageKeyGas uint64 = 1900  // Per storage key specified in EIP 2930 access list
+	TxTotalCostFloorPerToken  uint64 = 10    // Per token of calldata in a transaction, as a minimum the txn must pay (EIP-7623)
 
 	MaxCodeSize = 24576 // Maximum bytecode to permit for a contract
 
@@ -32,10 +34,9 @@ const (
 	InitCodeWordGas = 2
 
 	// EIP-4844: Shard Blob Transactions
-	FieldElementsPerBlob           = 4096 // each field element is 32 bytes
-	BlobSize                       = FieldElementsPerBlob * 32
-	BlobGasPerBlob          uint64 = 0x20000
-	DefaultMaxBlobsPerBlock uint64 = 6 // lower for Gnosis
+	FieldElementsPerBlob        = 4096 // each field element is 32 bytes
+	BlobSize                    = FieldElementsPerBlob * 32
+	BlobGasPerBlob       uint64 = 0x20000
 
 	// EIP-7702: set code tx
 	PerEmptyAccountCost = 25000

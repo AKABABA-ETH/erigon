@@ -107,6 +107,7 @@ var DefaultFlags = []cli.Flag{
 	&utils.SnapKeepBlocksFlag,
 	&utils.SnapStopFlag,
 	&utils.SnapStateStopFlag,
+	&utils.SnapSkipStateSnapshotDownloadFlag,
 	&utils.DbPageSizeFlag,
 	&utils.DbSizeLimitFlag,
 	&utils.DbWriteMapFlag,
@@ -136,6 +137,7 @@ var DefaultFlags = []cli.Flag{
 	&utils.DeveloperPeriodFlag,
 	&utils.VMEnableDebugFlag,
 	&utils.NetworkIdFlag,
+	&utils.PersistReceiptsFlag,
 	&utils.FakePoWFlag,
 	&utils.GpoBlocksFlag,
 	&utils.GpoPercentileFlag,
@@ -171,6 +173,7 @@ var DefaultFlags = []cli.Flag{
 	&utils.WithHeimdallWaypoints,
 	&utils.PolygonSyncFlag,
 	&utils.PolygonSyncStageFlag,
+	&utils.AAFlag,
 	&utils.EthStatsURLFlag,
 	&utils.OverridePragueFlag,
 
@@ -187,6 +190,7 @@ var DefaultFlags = []cli.Flag{
 	&utils.SentinelAddrFlag,
 	&utils.SentinelPortFlag,
 	&utils.SentinelBootnodes,
+	&utils.SentinelStaticPeers,
 
 	&utils.OtsSearchMaxCapFlag,
 
@@ -236,6 +240,11 @@ var DefaultFlags = []cli.Flag{
 
 	&utils.ChaosMonkeyFlag,
 
-	&utils.ShutterEnabled,
-	&utils.ShutterKeyperBootnodes,
+	&utils.ShutterEnabledFlag,
+	&utils.ShutterP2pBootstrapNodesFlag,
+	&utils.ShutterP2pListenPortFlag,
+
+	&utils.PolygonPosSingleSlotFinalityFlag,
+	&utils.PolygonPosSingleSlotFinalityBlockAtFlag,
+	&utils.GDBMeFlag,
 }

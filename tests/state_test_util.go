@@ -36,15 +36,14 @@ import (
 	"github.com/erigontech/erigon-lib/chain"
 	libcommon "github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/datadir"
-	"github.com/erigontech/erigon-lib/common/hexutility"
+	"github.com/erigontech/erigon-lib/common/hexutil"
 	"github.com/erigontech/erigon-lib/common/math"
 	"github.com/erigontech/erigon-lib/crypto"
 	"github.com/erigontech/erigon-lib/kv"
 	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon-lib/rlp"
 	state2 "github.com/erigontech/erigon-lib/state"
 	"github.com/erigontech/erigon-lib/wrap"
-
-	"github.com/erigontech/erigon-lib/rlp"
 	"github.com/erigontech/erigon/consensus/misc"
 	"github.com/erigontech/erigon/core"
 	"github.com/erigontech/erigon/core/state"
@@ -74,14 +73,14 @@ type stJSON struct {
 	Env  stEnv                    `json:"env"`
 	Pre  types.GenesisAlloc       `json:"pre"`
 	Tx   stTransaction            `json:"transaction"`
-	Out  hexutility.Bytes         `json:"out"`
+	Out  hexutil.Bytes            `json:"out"`
 	Post map[string][]stPostState `json:"post"`
 }
 
 type stPostState struct {
 	Root            libcommon.UnprefixedHash `json:"hash"`
 	Logs            libcommon.UnprefixedHash `json:"logs"`
-	Tx              hexutility.Bytes         `json:"txbytes"`
+	Tx              hexutil.Bytes            `json:"txbytes"`
 	ExpectException string                   `json:"expectException"`
 	Indexes         struct {
 		Data  int `json:"data"`
@@ -96,7 +95,7 @@ type stTransaction struct {
 	MaxPriorityFeePerGas *math.HexOrDecimal256     `json:"maxPriorityFeePerGas"`
 	Nonce                math.HexOrDecimal64       `json:"nonce"`
 	GasLimit             []math.HexOrDecimal64     `json:"gasLimit"`
-	PrivateKey           hexutility.Bytes          `json:"secretKey"`
+	PrivateKey           hexutil.Bytes             `json:"secretKey"`
 	To                   string                    `json:"to"`
 	Data                 []string                  `json:"data"`
 	Value                []string                  `json:"value"`
@@ -259,19 +258,26 @@ func (t *StateTest) RunNoVerify(tx kv.RwTx, subtest StateSubtest, vmconfig vm.Co
 		context.Difficulty = big.NewInt(0)
 	}
 	if config.IsCancun(block.Time()) && t.json.Env.ExcessBlobGas != nil {
-		context.BlobBaseFee, err = misc.GetBlobGasPrice(config, *t.json.Env.ExcessBlobGas)
+		context.BlobBaseFee, err = misc.GetBlobGasPrice(config, *t.json.Env.ExcessBlobGas, header.Time)
 		if err != nil {
 			return nil, libcommon.Hash{}, err
 		}
 	}
 	evm := vm.NewEVM(context, txContext, statedb, config, vmconfig)
+	if vmconfig.Tracer != nil && vmconfig.Tracer.OnTxStart != nil {
+		vmconfig.Tracer.OnTxStart(evm.GetVMContext(), nil, libcommon.Address{})
+	}
 
 	// Execute the message.
 	snapshot := statedb.Snapshot()
 	gaspool := new(core.GasPool)
-	gaspool.AddGas(block.GasLimit()).AddBlobGas(config.GetMaxBlobGasPerBlock())
-	if _, err = core.ApplyMessage(evm, msg, gaspool, true /* refunds */, false /* gasBailout */); err != nil {
+	gaspool.AddGas(block.GasLimit()).AddBlobGas(config.GetMaxBlobGasPerBlock(header.Time))
+	res, err := core.ApplyMessage(evm, msg, gaspool, true /* refunds */, false /* gasBailout */, nil /* engine */)
+	if err != nil {
 		statedb.RevertToSnapshot(snapshot)
+	}
+	if vmconfig.Tracer != nil && vmconfig.Tracer.OnTxEnd != nil {
+		vmconfig.Tracer.OnTxEnd(&types.Receipt{GasUsed: res.UsedGas}, nil)
 	}
 
 	if err = statedb.FinalizeTx(evm.ChainRules(), w); err != nil {

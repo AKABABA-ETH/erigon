@@ -31,6 +31,8 @@ import (
 
 	"github.com/c2h5oh/datasize"
 
+	"github.com/erigontech/erigon-lib/kv/prune"
+
 	"github.com/erigontech/erigon-lib/chain"
 	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/datadir"
@@ -40,7 +42,6 @@ import (
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/eth/ethconfig/estimate"
 	"github.com/erigontech/erigon/eth/gasprice/gaspricecfg"
-	"github.com/erigontech/erigon/ethdb/prune"
 	"github.com/erigontech/erigon/params"
 	"github.com/erigontech/erigon/rpc"
 	"github.com/erigontech/erigon/txnprovider/shutter"
@@ -258,6 +259,13 @@ type Config struct {
 	SilkwormRpcLogDumpResponse   bool
 	SilkwormRpcNumWorkers        uint32
 	SilkwormRpcJsonCompatibility bool
+
+	// PoS Single Slot finality
+	PolygonPosSingleSlotFinality        bool
+	PolygonPosSingleSlotFinalityBlockAt uint64
+
+	// Account Abstraction
+	AllowAA bool
 }
 
 type Sync struct {
@@ -278,4 +286,5 @@ type Sync struct {
 
 	ChaosMonkey              bool
 	AlwaysGenerateChangesets bool
+	PersistReceipts          uint64
 }

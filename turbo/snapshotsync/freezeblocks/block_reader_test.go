@@ -27,10 +27,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/erigontech/erigon-lib/chain/networkname"
-	"github.com/erigontech/erigon-lib/log/v3"
-
 	"github.com/erigontech/erigon-lib/common/length"
 	"github.com/erigontech/erigon-lib/downloader/snaptype"
+	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon-lib/recsplit"
 	"github.com/erigontech/erigon-lib/seg"
 	coresnaptype "github.com/erigontech/erigon/core/snaptype"
@@ -57,7 +56,7 @@ func TestBlockReaderLastFrozenSpanIdWhenSegmentFilesArePresent(t *testing.T) {
 
 	blockReader := &BlockReader{
 		borSn:         borRoSnapshots,
-		heimdallStore: heimdall.NewSnapshotStore(heimdall.NewMdbxStore(logger, dataDir, 1), borRoSnapshots)}
+		heimdallStore: heimdall.NewSnapshotStore(heimdall.NewMdbxStore(logger, dataDir, false, 1), borRoSnapshots)}
 	require.Equal(t, uint64(78), blockReader.LastFrozenSpanId())
 }
 
@@ -76,7 +75,7 @@ func TestBlockReaderLastFrozenSpanIdWhenSegmentFilesAreNotPresent(t *testing.T) 
 
 	blockReader := &BlockReader{
 		borSn:         borRoSnapshots,
-		heimdallStore: heimdall.NewSnapshotStore(heimdall.NewMdbxStore(logger, dataDir, 1), borRoSnapshots)}
+		heimdallStore: heimdall.NewSnapshotStore(heimdall.NewMdbxStore(logger, dataDir, false, 1), borRoSnapshots)}
 	require.Equal(t, uint64(0), blockReader.LastFrozenSpanId())
 }
 
@@ -147,7 +146,7 @@ func TestBlockReaderLastFrozenSpanIdReturnsLastSegWithIdx(t *testing.T) {
 
 	blockReader := &BlockReader{
 		borSn:         borRoSnapshots,
-		heimdallStore: heimdall.NewSnapshotStore(heimdall.NewMdbxStore(logger, dataDir, 1), borRoSnapshots)}
+		heimdallStore: heimdall.NewSnapshotStore(heimdall.NewMdbxStore(logger, dataDir, false, 1), borRoSnapshots)}
 	require.Equal(t, uint64(156), blockReader.LastFrozenSpanId())
 }
 
@@ -182,7 +181,7 @@ func TestBlockReaderLastFrozenSpanIdReturnsZeroWhenAllSegmentsDoNotHaveIdx(t *te
 
 	blockReader := &BlockReader{
 		borSn:         borRoSnapshots,
-		heimdallStore: heimdall.NewSnapshotStore(heimdall.NewMdbxStore(logger, dataDir, 1), borRoSnapshots)}
+		heimdallStore: heimdall.NewSnapshotStore(heimdall.NewMdbxStore(logger, dataDir, false, 1), borRoSnapshots)}
 	require.Equal(t, uint64(0), blockReader.LastFrozenSpanId())
 }
 

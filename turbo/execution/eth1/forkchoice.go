@@ -69,9 +69,10 @@ func sendForkchoiceErrorWithoutWaiting(logger log.Logger, ch chan forkchoiceOutc
 	}
 }
 
-func isDomainAheadOfBlocks(tx kv.RwTx) bool {
-	doms, err := state.NewSharedDomains(tx, log.New())
+func isDomainAheadOfBlocks(tx kv.RwTx, logger log.Logger) bool {
+	doms, err := state.NewSharedDomains(tx, logger)
 	if err != nil {
+		logger.Debug("domain ahead of blocks", "err", err)
 		return errors.Is(err, state.ErrBehindCommitment)
 	}
 	defer doms.Close()
@@ -244,6 +245,8 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 	}
 
 	UpdateForkChoiceArrivalDelay(fcuHeader.Time)
+	metrics.UpdateBlockConsumerPreExecutionDelay(fcuHeader.Time, fcuHeader.Number.Uint64(), e.logger)
+	defer metrics.UpdateBlockConsumerPostExecutionDelay(fcuHeader.Time, fcuHeader.Number.Uint64(), e.logger)
 
 	limitedBigJump := e.syncCfg.LoopBlockLimit > 0 && finishProgressBefore > 0 && fcuHeader.Number.Uint64()-finishProgressBefore > uint64(e.syncCfg.LoopBlockLimit-2)
 	isSynced := finishProgressBefore > 0 && finishProgressBefore > e.blockReader.FrozenBlocks() && finishProgressBefore == headersProgressBefore
@@ -393,7 +396,7 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 			}
 		}
 	}
-	if isDomainAheadOfBlocks(tx) {
+	if isDomainAheadOfBlocks(tx, e.logger) {
 		if err := tx.Commit(); err != nil {
 			sendForkchoiceErrorWithoutWaiting(e.logger, outcomeCh, err, false)
 			return
@@ -436,7 +439,7 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 				ValidationError: validationError,
 			}, false)
 		}
-		if err := e.forkValidator.FlushExtendingFork(tx, e.accumulator); err != nil {
+		if err := e.forkValidator.FlushExtendingFork(tx, e.accumulator, e.recentLogs); err != nil {
 			sendForkchoiceErrorWithoutWaiting(e.logger, outcomeCh, err, stateFlushingInParallel)
 			return
 		}
@@ -519,7 +522,7 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 		var m runtime.MemStats
 		dbg.ReadMemStats(&m)
 		blockTimings := e.forkValidator.GetTimings(blockHash)
-		logArgs := []interface{}{"age", common.PrettyAge(time.Unix(int64(fcuHeader.Time), 0)), "head", headHash, "hash", blockHash}
+		logArgs := []interface{}{"hash", blockHash, "number", fcuHeader.Number.Uint64(), "age", common.PrettyAge(time.Unix(int64(fcuHeader.Time), 0))}
 		if flushExtendingFork {
 			totalTime := blockTimings[engine_helpers.BlockTimingsValidationIndex]
 			if !e.syncCfg.ParallelStateFlushing {
@@ -528,9 +531,15 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 			gasUsedMgas := float64(fcuHeader.GasUsed) / 1e6
 			mgasPerSec := gasUsedMgas / totalTime.Seconds()
 			metrics.ChainTipMgasPerSec.Add(mgasPerSec)
-			e.avgMgasSec = (e.avgMgasSec*float64(e.recordedMgasSec) + mgasPerSec) / float64(e.recordedMgasSec+1)
-			e.recordedMgasSec++
-			logArgs = append(logArgs, "number", fcuHeader.Number.Uint64(), "execution", blockTimings[engine_helpers.BlockTimingsValidationIndex], "mgas/s", fmt.Sprintf("%.2f", mgasPerSec), "average mgas/s", fmt.Sprintf("%.2f", e.avgMgasSec))
+
+			const blockRange = 300 // ~1 hour
+			const alpha = 2.0 / (blockRange + 1)
+
+			if e.avgMgasSec == 0 {
+				e.avgMgasSec = mgasPerSec
+			}
+			e.avgMgasSec = alpha*mgasPerSec + (1-alpha)*e.avgMgasSec
+			logArgs = append(logArgs, "execution", blockTimings[engine_helpers.BlockTimingsValidationIndex], "mgas/s", fmt.Sprintf("%.2f", mgasPerSec), "average mgas/s", fmt.Sprintf("%.2f", e.avgMgasSec))
 			if !e.syncCfg.ParallelStateFlushing {
 				logArgs = append(logArgs, "flushing", blockTimings[engine_helpers.BlockTimingsFlushExtendingFork])
 			}

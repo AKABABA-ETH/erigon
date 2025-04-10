@@ -230,7 +230,7 @@ func epochTransitionFor(chain consensus.ChainHeaderReader, e *NonTransactionalEp
 type AuRa struct {
 	e           *NonTransactionalEpochReader
 	exitCh      chan struct{}
-	signerMutex sync.RWMutex // Protects the signer fields
+	signerMutex sync.Mutex // Protects the signer fields
 
 	step PermissionedStep
 	// History of step hashes recently received from peers.
@@ -241,7 +241,8 @@ type AuRa struct {
 	EpochManager  *EpochManager // Mutex<EpochManager>,
 
 	certifier     *libcommon.Address // certifies service transactions
-	certifierLock sync.RWMutex
+	certifierLock sync.Mutex
+	db            kv.RwDB
 }
 
 func NewAuRa(spec *chain.AuRaConfig, db kv.RwDB) (*AuRa, error) {
@@ -317,6 +318,7 @@ func NewAuRa(spec *chain.AuRaConfig, db kv.RwDB) (*AuRa, error) {
 		cfg:                auraParams,
 		receivedStepHashes: ReceivedStepHashes{},
 		EpochManager:       NewEpochManager(),
+		db:                 db,
 	}
 	c.step.canPropose.Store(true)
 
@@ -717,7 +719,7 @@ func (c *AuRa) applyRewards(header *types.Header, state *state.IntraBlockState, 
 // word `signal epoch` == word `pending epoch`
 func (c *AuRa) Finalize(config *chain.Config, header *types.Header, state *state.IntraBlockState, txs types.Transactions,
 	uncles []*types.Header, receipts types.Receipts, withdrawals []*types.Withdrawal,
-	chain consensus.ChainReader, syscall consensus.SystemCall, logger log.Logger,
+	chain consensus.ChainReader, syscall consensus.SystemCall, skipReceiptsEval bool, logger log.Logger,
 ) (types.Transactions, types.Receipts, types.FlatRequests, error) {
 	if err := c.applyRewards(header, state, syscall); err != nil {
 		return nil, nil, nil, err
@@ -856,7 +858,7 @@ func allHeadersUntil(chain consensus.ChainHeaderReader, from *types.Header, to l
 
 // FinalizeAndAssemble implements consensus.Engine
 func (c *AuRa) FinalizeAndAssemble(config *chain.Config, header *types.Header, state *state.IntraBlockState, txs types.Transactions, uncles []*types.Header, receipts types.Receipts, withdrawals []*types.Withdrawal, chain consensus.ChainReader, syscall consensus.SystemCall, call consensus.Call, logger log.Logger) (*types.Block, types.Transactions, types.Receipts, types.FlatRequests, error) {
-	outTxs, outReceipts, _, err := c.Finalize(config, header, state, txs, uncles, receipts, withdrawals, chain, syscall, logger)
+	outTxs, outReceipts, _, err := c.Finalize(config, header, state, txs, uncles, receipts, withdrawals, chain, syscall, false, logger)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -1008,8 +1010,11 @@ func (c *AuRa) SealHash(header *types.Header) libcommon.Hash {
 // See https://openethereum.github.io/Permissioning.html#gas-price
 // This is thread-safe: it only accesses the `certifier` which is used behind a RWLock
 func (c *AuRa) IsServiceTransaction(sender libcommon.Address, syscall consensus.SystemCall) bool {
-	c.certifierLock.RLock()
-	defer c.certifierLock.RUnlock()
+	c.certifierLock.Lock()
+	defer c.certifierLock.Unlock()
+	if c.certifier == nil && c.cfg.Registrar != nil {
+		c.certifier = getCertifier(*c.cfg.Registrar, syscall)
+	}
 	if c.certifier == nil {
 		return false
 	}
@@ -1037,6 +1042,7 @@ func (c *AuRa) IsServiceTransaction(sender libcommon.Address, syscall consensus.
 
 // Close implements consensus.Engine. It's a noop for clique as there are no background threads.
 func (c *AuRa) Close() error {
+	c.db.Close()
 	libcommon.SafeClose(c.exitCh)
 	return nil
 }

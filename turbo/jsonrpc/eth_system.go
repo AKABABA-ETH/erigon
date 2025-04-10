@@ -215,7 +215,8 @@ func (api *APIImpl) BlobBaseFee(ctx context.Context) (*hexutil.Big, error) {
 	if config == nil {
 		return (*hexutil.Big)(common.Big0), nil
 	}
-	ret256, err := misc.GetBlobGasPrice(config, misc.CalcExcessBlobGas(config, header))
+	nextBlockTime := header.Time + config.SecondsPerSlot()
+	ret256, err := misc.GetBlobGasPrice(config, misc.CalcExcessBlobGas(config, header, nextBlockTime), nextBlockTime)
 	if err != nil {
 		return nil, err
 	}
@@ -278,4 +279,8 @@ func (b *GasPriceOracleBackend) GetReceipts(ctx context.Context, block *types.Bl
 }
 func (b *GasPriceOracleBackend) PendingBlockAndReceipts() (*types.Block, types.Receipts) {
 	return nil, nil
+}
+
+func (b *GasPriceOracleBackend) GetReceiptsGasUsed(ctx context.Context, block *types.Block) (types.Receipts, error) {
+	return b.baseApi.getReceiptsGasUsed(ctx, b.tx, block)
 }

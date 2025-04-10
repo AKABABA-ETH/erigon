@@ -156,7 +156,10 @@ func syncBySmallSteps(db kv.TemporalRwDB, miningConfig params.MiningConfig, ctx 
 		return err
 	}
 
-	sn, borSn, agg, _, _, _ := allSnapshots(ctx, db, logger1)
+	sn, borSn, agg, _, _, _, err := allSnapshots(ctx, db, logger1)
+	if err != nil {
+		return err
+	}
 	defer sn.Close()
 	defer borSn.Close()
 	defer agg.Close()
@@ -210,12 +213,13 @@ func syncBySmallSteps(db kv.TemporalRwDB, miningConfig params.MiningConfig, ctx 
 		stopAt = 1
 	}
 
+	var structLogger *logger.StructLogger
 	traceStart := func() {
-		vmConfig.Tracer = logger.NewStructLogger(&logger.LogConfig{})
-		vmConfig.Debug = true
+		structLogger = logger.NewStructLogger(&logger.LogConfig{})
+		vmConfig.Tracer = structLogger.Hooks()
 	}
 	traceStop := func(id int) {
-		if !vmConfig.Debug {
+		if vmConfig.Tracer == nil {
 			return
 		}
 		w, err3 := os.Create(fmt.Sprintf("trace_%d.txt", id))
@@ -224,7 +228,7 @@ func syncBySmallSteps(db kv.TemporalRwDB, miningConfig params.MiningConfig, ctx 
 		}
 		encoder := json.NewEncoder(w)
 		encoder.SetIndent(" ", " ")
-		for _, l := range logger.FormatLogs(vmConfig.Tracer.(*logger.StructLogger).StructLogs()) {
+		for _, l := range logger.FormatLogs(structLogger.StructLogs()) {
 			if err2 := encoder.Encode(l); err2 != nil {
 				panic(err2)
 			}
@@ -234,7 +238,6 @@ func syncBySmallSteps(db kv.TemporalRwDB, miningConfig params.MiningConfig, ctx 
 		}
 
 		vmConfig.Tracer = nil
-		vmConfig.Debug = false
 	}
 	_, _ = traceStart, traceStop
 
@@ -387,7 +390,10 @@ func checkMinedBlock(b1, b2 *types.Block, chainConfig *chain2.Config) {
 func loopExec(db kv.TemporalRwDB, ctx context.Context, unwind uint64, logger log.Logger) error {
 	chainConfig := fromdb.ChainConfig(db)
 	dirs, pm := datadir.New(datadirCli), fromdb.PruneMode(db)
-	sn, borSn, agg, _, _, _ := allSnapshots(ctx, db, logger)
+	sn, borSn, agg, _, _, _, err := allSnapshots(ctx, db, logger)
+	if err != nil {
+		return err
+	}
 	defer sn.Close()
 	defer borSn.Close()
 	defer agg.Close()

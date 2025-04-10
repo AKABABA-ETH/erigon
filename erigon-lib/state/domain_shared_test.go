@@ -26,11 +26,12 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
 
+	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/length"
 	"github.com/erigontech/erigon-lib/kv"
 	"github.com/erigontech/erigon-lib/kv/rawdbv3"
 	"github.com/erigontech/erigon-lib/log/v3"
-	"github.com/erigontech/erigon-lib/types"
+	accounts3 "github.com/erigontech/erigon-lib/types/accounts"
 )
 
 func TestSharedDomain_CommitmentKeyReplacement(t *testing.T) {
@@ -47,7 +48,7 @@ func TestSharedDomain_CommitmentKeyReplacement(t *testing.T) {
 	ac := agg.BeginFilesRo()
 	defer ac.Close()
 
-	domains, err := NewSharedDomains(WrapTxWithCtx(rwTx, ac), log.New())
+	domains, err := NewSharedDomains(wrapTxWithCtx(rwTx, ac), log.New())
 	require.NoError(t, err)
 	defer domains.Close()
 
@@ -92,7 +93,7 @@ func TestSharedDomain_CommitmentKeyReplacement(t *testing.T) {
 	defer rwTx.Rollback()
 
 	// 4. restart on same (replaced keys) files
-	domains, err = NewSharedDomains(WrapTxWithCtx(rwTx, ac), log.New())
+	domains, err = NewSharedDomains(wrapTxWithCtx(rwTx, ac), log.New())
 	require.NoError(t, err)
 	defer domains.Close()
 
@@ -122,7 +123,7 @@ func TestSharedDomain_Unwind(t *testing.T) {
 	ac := agg.BeginFilesRo()
 	defer ac.Close()
 
-	domains, err := NewSharedDomains(WrapTxWithCtx(rwTx, ac), log.New())
+	domains, err := NewSharedDomains(wrapTxWithCtx(rwTx, ac), log.New())
 	require.NoError(t, err)
 	defer domains.Close()
 
@@ -144,7 +145,7 @@ Loop:
 
 	ac = agg.BeginFilesRo()
 	defer ac.Close()
-	domains, err = NewSharedDomains(WrapTxWithCtx(rwTx, ac), log.New())
+	domains, err = NewSharedDomains(wrapTxWithCtx(rwTx, ac), log.New())
 	require.NoError(t, err)
 	defer domains.Close()
 
@@ -155,7 +156,13 @@ Loop:
 	for ; i < int(maxTx); i++ {
 		domains.SetTxNum(uint64(i))
 		for accs := 0; accs < 256; accs++ {
-			v := types.EncodeAccountBytesV3(uint64(i), uint256.NewInt(uint64(i*10e6)+uint64(accs*10e2)), nil, 0)
+			acc := accounts3.Account{
+				Nonce:       uint64(i),
+				Balance:     *uint256.NewInt(uint64(i*10e6) + uint64(accs*10e2)),
+				CodeHash:    common.Hash{},
+				Incarnation: 0,
+			}
+			v := accounts3.SerialiseV3(&acc)
 			k0[0] = byte(accs)
 			pv, step, err := domains.GetLatest(kv.AccountsDomain, k0)
 			require.NoError(t, err)
@@ -236,7 +243,7 @@ func TestSharedDomain_IteratePrefix(t *testing.T) {
 
 	ac = agg.BeginFilesRo()
 	defer ac.Close()
-	wrwTx := WrapTxWithCtx(rwTx, ac)
+	wrwTx := wrapTxWithCtx(rwTx, ac)
 	domains, err := NewSharedDomains(wrwTx, log.New())
 	require.NoError(err)
 	defer domains.Close()
@@ -329,7 +336,7 @@ func TestSharedDomain_IteratePrefix(t *testing.T) {
 		_, err := ac.Prune(ctx, rwTx, 0, nil)
 		require.NoError(err)
 
-		wrwTx = WrapTxWithCtx(rwTx, ac)
+		wrwTx = wrapTxWithCtx(rwTx, ac)
 		domains, err = NewSharedDomains(wrwTx, log.New())
 		require.NoError(err)
 		defer domains.Close()
@@ -395,7 +402,7 @@ func TestSharedDomain_StorageIter(t *testing.T) {
 	ac := agg.BeginFilesRo()
 	defer ac.Close()
 
-	wtxRw := WrapTxWithCtx(rwTx, ac)
+	wtxRw := wrapTxWithCtx(rwTx, ac)
 	domains, err := NewSharedDomains(wtxRw, log.New())
 	require.NoError(t, err)
 	defer domains.Close()
@@ -416,7 +423,13 @@ func TestSharedDomain_StorageIter(t *testing.T) {
 	for ; i < int(maxTx); i++ {
 		domains.SetTxNum(uint64(i))
 		for accs := 0; accs < accounts; accs++ {
-			v := types.EncodeAccountBytesV3(uint64(i), uint256.NewInt(uint64(i*10e6)+uint64(accs*10e2)), nil, 0)
+			acc := accounts3.Account{
+				Nonce:       uint64(i),
+				Balance:     *uint256.NewInt(uint64(i*10e6) + uint64(accs*10e2)),
+				CodeHash:    common.Hash{},
+				Incarnation: 0,
+			}
+			v := accounts3.SerialiseV3(&acc)
 			k0[0] = byte(accs)
 
 			pv, step, err := domains.GetLatest(kv.AccountsDomain, k0)
@@ -475,7 +488,7 @@ func TestSharedDomain_StorageIter(t *testing.T) {
 	rwTx, err = db.BeginRw(ctx)
 	require.NoError(t, err)
 
-	domains, err = NewSharedDomains(WrapTxWithCtx(rwTx, ac), log.New())
+	domains, err = NewSharedDomains(wrapTxWithCtx(rwTx, ac), log.New())
 	require.NoError(t, err)
 	defer domains.Close()
 

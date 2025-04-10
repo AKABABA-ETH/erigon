@@ -380,7 +380,7 @@ func writeInterface(val reflect.Value, w *encBuffer) error {
 }
 
 func makeSliceWriter(typ reflect.Type, ts tags) (writer, error) {
-	etypeinfo := cachedTypeInfo1(typ.Elem(), tags{})
+	etypeinfo := theTC.infoWhileGenerating(typ.Elem(), tags{})
 	if etypeinfo.writerErr != nil {
 		return nil, etypeinfo.writerErr
 	}
@@ -448,7 +448,7 @@ func makeStructWriter(typ reflect.Type) (writer, error) {
 }
 
 func makePtrWriter(typ reflect.Type, ts tags) (writer, error) {
-	etypeinfo := cachedTypeInfo1(typ.Elem(), tags{})
+	etypeinfo := theTC.infoWhileGenerating(typ.Elem(), tags{})
 	if etypeinfo.writerErr != nil {
 		return nil, etypeinfo.writerErr
 	}
@@ -637,11 +637,8 @@ func EncodeUint256(i *uint256.Int, w io.Writer, buffer []byte) error {
 	if _, err := w.Write(buffer[:1]); err != nil {
 		return err
 	}
-	binary.BigEndian.PutUint64(buffer[0:8], i[3])
-	binary.BigEndian.PutUint64(buffer[8:16], i[2])
-	binary.BigEndian.PutUint64(buffer[16:24], i[1])
-	binary.BigEndian.PutUint64(buffer[24:32], i[0])
-	_, err := w.Write(buffer[32-nBytes:])
+	i.PutUint256(buffer)
+	_, err := w.Write(buffer[32-nBytes : 32])
 	return err
 }
 
@@ -720,6 +717,32 @@ func EncodeStructSizePrefix(size int, w io.Writer, buffer []byte) error {
 	} else {
 		buffer[0] = byte(size) + 192
 		if _, err := w.Write(buffer[:1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ByteSliceSliceSize(bb [][]byte) int {
+	size := 0
+	for i := 0; i < len(bb); i++ {
+		size += StringLen(bb[i])
+	}
+	return size + ListPrefixLen(size)
+}
+
+func EncodeByteSliceSlice(bb [][]byte, w io.Writer, b []byte) error {
+	totalSize := 0
+	for i := 0; i < len(bb); i++ {
+		totalSize += StringLen(bb[i])
+	}
+
+	if err := EncodeStructSizePrefix(totalSize, w, b); err != nil {
+		return err
+	}
+
+	for i := 0; i < len(bb); i++ {
+		if err := EncodeString(bb[i], w, b); err != nil {
 			return err
 		}
 	}
